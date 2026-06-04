@@ -244,15 +244,6 @@ Issues and PRs welcome. The skills are still growing — likely additions:
 
 ---
 
-## Citation
-
-If you use this tool in published work, please cite:
-
-> Lovreglio, R. *bonsai-bim-skills*. Massey University.
-> https://github.com/ProfRino/bonsai-bim-skills
-
----
-
 ## License
 
 GPL-3.0 — see [LICENSE](LICENSE). Matches [Bonsai](https://bonsai.coop/)
@@ -266,3 +257,12 @@ Built on top of [Bonsai](https://bonsai.coop/) (formerly BlenderBIM) by
 Dion Moult and contributors, [IfcOpenShell](https://ifcopenshell.org/)
 by Thomas Krijnen, and the [Claude Code](https://docs.claude.com/en/docs/claude-code/overview)
 skill system by Anthropic.
+
+---
+
+## Citation
+
+If you use this tool in published work, please cite:
+
+> Lovreglio, R. *bonsai-bim-skills*. Massey University.
+> https://github.com/ProfRino/bonsai-bim-skills
