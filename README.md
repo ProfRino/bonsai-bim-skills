@@ -244,6 +244,33 @@ Issues and PRs welcome. The skills are still growing — likely additions:
 
 ---
 
+## Citation
+
+If you use these skills in published work, please cite:
+
+> Lovreglio, R. (2026). *bonsai-bim-skills: Claude Code skills for
+> programmatic IFC / BIM authoring in Blender + Bonsai*. Massey
+> University. https://github.com/ProfRino/bonsai-bim-skills
+
+BibTeX:
+
+```bibtex
+@software{lovreglio_bonsai_bim_skills_2026,
+  author       = {Lovreglio, Ruggiero},
+  title        = {bonsai-bim-skills: Claude Code skills for programmatic IFC / BIM authoring in Blender + Bonsai},
+  year         = {2026},
+  publisher    = {Massey University},
+  url          = {https://github.com/ProfRino/bonsai-bim-skills},
+  version      = {0.2.0}
+}
+```
+
+A machine-readable [`CITATION.cff`](CITATION.cff) is shipped in the repo
+root — GitHub renders a "Cite this repository" button in the right
+sidebar that auto-generates APA / BibTeX from it.
+
+---
+
 ## License
 
 GPL-3.0 — see [LICENSE](LICENSE). Matches [Bonsai](https://bonsai.coop/)
