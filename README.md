@@ -79,7 +79,7 @@ the source and in each `SKILL.md`.
 
 1. **Clone this repo:**
    ```bash
-   git clone https://github.com/<you>/bonsai-bim-skills.git
+   git clone https://github.com/ProfRino/bonsai-bim-skills.git
    cd bonsai-bim-skills
    ```
 
