@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.venv/
+
+# Blender
+*.blend1
+*.blend@
+*.blend.bak
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Local examples output (artefacts get regenerated)
+examples/output/
+
+# Bonsai drawing cache
+drawings/cache/
+drawings/*.h5
+
+# IDS validation reports (regeneratable)
+*_report.html
+*_issues.bcfzip
+
+# OneDrive sync artefacts
+*.url
+desktop.ini
