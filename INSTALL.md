@@ -5,19 +5,71 @@ Bonsai.
 
 ## 1. Prerequisites
 
+### Required
+
 | Tool | Version | Why |
 |---|---|---|
 | Blender | 5.1 or newer | host application |
-| Bonsai | 0.8.5 or newer | OpenBIM authoring inside Blender |
-| Bonsai MCP add-on | latest | exposes a localhost MCP server so Claude Code can drive Blender from outside |
+| Bonsai | 0.8.5 or newer | OpenBIM authoring add-on inside Blender — provides the Python API (`from bonsai import tool`, `bpy.ops.bim.*`) that these skills call |
+| **BlenderMCP** ([ahujasid/blender-mcp](https://github.com/ahujasid/blender-mcp)) | latest | exposes a localhost MCP server with `execute_blender_code` + viewport screenshots. **This is what the skills drive Blender through.** |
 | Claude Code | latest | the agent that loads + runs these skills |
 | Python | 3.13 | ships with Blender 5.1; nothing to install separately |
 
-Optional but recommended:
+### Recommended (tested-with-it stack)
 
-- `ifctester` (for IDS validation helpers)
-- `ifcopenshell` clone of the source tree for reading internal Bonsai
-  code while debugging (not required to run)
+| Tool | Why |
+|---|---|
+| **ifc-bonsai-mcp** ([Show2Instruct/ifc-bonsai-mcp](https://github.com/Show2Instruct/ifc-bonsai-mcp)) | Provides higher-level MCP tools (`mcp__bonsai-ifc__create_wall`, `create_door`, `create_roof`, `apply_style`, scene queries, etc.). These skills don't call those tools directly, but the development + verification of v0.1.0 was done with this MCP installed alongside BlenderMCP. Highly recommended — it lets Claude do ad-hoc IFC ops *outside* the skills' scope (poke at scene, query an entity, etc.) without needing to write a full `execute_blender_code` payload. |
+
+> **About the naming:** the repo is `ifc-bonsai-mcp` (the URL above). The
+> MCP server NAME — what shows up as the `mcp__bonsai-ifc__*` prefix on
+> its tools — is `bonsai-ifc`. Don't be thrown by the swap.
+
+### Optional
+
+| Tool | Why optional |
+|---|---|
+| `ifctester` Python lib | Drives the IDS validation helpers (`author_room_ids`, `validate_against_ids`). Auto-installed with newer Bonsai builds. |
+| `ifcopenshell` source clone | Useful for reading internal Bonsai code while debugging. Not required to run. |
+| **Bonsai MCP** ([JotaDeRodriguez/Bonsai_mcp](https://github.com/JotaDeRodriguez/Bonsai_mcp)) — a different Blender-MCP project | Another option if BlenderMCP doesn't suit you. **Not** the verified setup for v0.1.0; included here for completeness. |
+
+### MCP architecture (why two MCPs)
+
+Two distinct layers:
+
+```
+Claude Code  ──MCP──▶  BlenderMCP server  ──socket──▶  Blender
+                                                          │
+                                                          ├─ Bonsai add-on (provides bpy.ops.bim.* + tool.Ifc etc.)
+                                                          ├─ ifc-bonsai-mcp add-on (exposes its own MCP server with high-level IFC tools)
+                                                          └─ <the skills' Python runs here>
+```
+
+- **BlenderMCP** is the transport: sends Python code from Claude into
+  Blender's process and returns results. The skills use it via
+  `mcp__Blender__execute_blender_code`.
+- **ifc-bonsai-mcp** runs INSIDE Blender as another MCP server that
+  Claude can talk to in parallel. It exposes high-level tools like
+  `mcp__bonsai-ifc__create_wall`. **The skills do not use it** —
+  every helper imports Bonsai's Python API directly inside
+  `execute_blender_code` and bypasses higher-level MCP wrappers. But
+  having it installed lets the agent use those tools for ad-hoc work
+  outside the skill's scope, which is what we did during development.
+
+When the skill code runs, it looks like:
+
+```python
+# Sent over BlenderMCP via execute_blender_code:
+from bonsai import tool
+from bonsai.bim.module.model.wall import DumbWallGenerator, DumbWallJoiner
+import ifcopenshell.api
+# ...
+bpy.ops.bim.add_window()
+```
+
+Everything happens in-process inside Blender. The two MCPs are
+independent — you could run with just BlenderMCP if you don't want
+ifc-bonsai-mcp's extras.
 
 ## 2. Install Blender + Bonsai
 
@@ -27,28 +79,60 @@ Optional but recommended:
    - Search for "Bonsai" → Install.
    - Restart Blender. The "BIM" workspace tab should appear.
 
-## 3. Install the Bonsai MCP add-on
+## 3. Install BlenderMCP (required)
 
-Claude Code drives Blender through a small MCP server that runs inside
-the Blender process.
+[github.com/ahujasid/blender-mcp](https://github.com/ahujasid/blender-mcp)
 
-1. Download the add-on ZIP from
-   [github.com/JotaDeRodriguez/Bonsai_mcp](https://github.com/JotaDeRodriguez/Bonsai_mcp).
-2. In Blender: Edit → Preferences → Add-ons → Install from Disk → pick
-   the ZIP.
-3. Enable the add-on. A new panel ("MCP") appears in the 3D View sidebar
-   (press `N` to open the sidebar).
-4. Click **Start MCP Server**. Default port: `9876` (or `9877` if 9876
-   is taken). Leave Blender running with the server started.
+1. Follow the install steps in that repo's README — typically a Blender
+   add-on ZIP that you install via Edit → Preferences → Add-ons →
+   Install from Disk.
+2. Enable the add-on. A new panel ("BlenderMCP") appears in the 3D View
+   sidebar (press `N` to open the sidebar).
+3. Click **Connect to MCP server** (or **Start MCP Server**, depending
+   on the version). Leave Blender running with the server connected.
 
-## 4. Clone this repo
+## 4. Install ifc-bonsai-mcp (recommended)
+
+[github.com/Show2Instruct/ifc-bonsai-mcp](https://github.com/Show2Instruct/ifc-bonsai-mcp)
+
+This is the second MCP — runs inside Blender alongside BlenderMCP and
+exposes Bonsai-specific tools (`create_wall`, `create_door`, scene
+queries, etc.). The skills don't call these tools directly, but the
+v0.1.0 verified setup had it installed.
+
+Follow that repo's install instructions. The tool prefix it exposes to
+Claude will be `mcp__bonsai-ifc__*`.
+
+## 5. Configure Claude Code's MCP connections
+
+Claude Code reads MCP server config from a JSON file (location depends
+on platform — see Claude Code docs). With the verified setup you'll
+have BOTH servers configured, e.g.:
+
+```json
+{
+  "mcpServers": {
+    "Blender": {
+      "command": "<path or invocation per BlenderMCP README>"
+    },
+    "bonsai-ifc": {
+      "command": "<path or invocation per ifc-bonsai-mcp README>"
+    }
+  }
+}
+```
+
+Exact `command` strings come from each MCP's README — copy from there
+verbatim.
+
+## 6. Clone this repo
 
 ```bash
 git clone https://github.com/<you>/bonsai-bim-skills.git
 cd bonsai-bim-skills
 ```
 
-## 5. Wire the skills into Claude Code
+## 7. Wire the skills into Claude Code
 
 Claude Code loads skills from `~/.claude/skills/<skill-name>/`. The
 simplest setup is to symlink so edits in the repo propagate without
@@ -74,26 +158,7 @@ Copy-Item -Recurse "$pwd\skills\bonsai-walls"    "$env:USERPROFILE\.claude\skill
 Copy-Item -Recurse "$pwd\skills\bonsai-drawings" "$env:USERPROFILE\.claude\skills\bonsai-drawings"
 ```
 
-## 6. Configure Claude Code's MCP connection to Blender
-
-Claude Code reads MCP server config from a JSON file (location depends
-on platform — see Claude Code docs). Add an entry like:
-
-```json
-{
-  "mcpServers": {
-    "blender": {
-      "command": "<path to MCP launcher>",
-      "args": ["--port", "9877"]
-    }
-  }
-}
-```
-
-Specifics vary by MCP server distribution — follow the Bonsai MCP
-add-on's README.
-
-## 7. Verify
+## 8. Verify
 
 Open a new Claude Code session and ask:
 
@@ -113,13 +178,13 @@ If anything fails:
 
 - Check Blender's System Console (Window → Toggle System Console on
   Windows) for tracebacks.
-- Make sure the Bonsai MCP server is still running (the panel button
-  toggles between "Start" and "Stop").
+- Make sure the BlenderMCP server is still running (the sidebar panel
+  toggles between "Connect" and "Disconnect").
 - Try running `skills/bonsai-walls/examples/build_room_4x6.py` directly
   in Blender's Scripting workspace to isolate whether the issue is in
   the skill or in the Claude Code wiring.
 
-## 8. Output paths
+## 9. Output paths
 
 The skills don't hardcode an output directory. Each example script has
 an `OUTPUT_DIR` constant at the top that you adjust before running. For
@@ -137,7 +202,7 @@ Saved artefacts per example:
 - `<OUTPUT_DIR>/drawings/cache/*.h5` — Bonsai drawing cache (regenerate
   to refresh).
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 - **"Bonsai experienced an error :( ... PermissionError: drawings"** —
   you skipped `bpy.ops.bim.save_project(filepath=...)` before creating

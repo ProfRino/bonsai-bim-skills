@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 First public release. Two Claude Code skills covering programmatic IFC
 authoring + 2D drawings in Blender + Bonsai.
 
+Verified MCP stack for v0.1.0:
+- [BlenderMCP](https://github.com/ahujasid/blender-mcp) — provides
+  `execute_blender_code` (the only MCP tool the skills actually call).
+- [ifc-bonsai-mcp](https://github.com/Show2Instruct/ifc-bonsai-mcp) —
+  installed alongside; exposes `mcp__bonsai-ifc__*` high-level tools
+  used by the agent for ad-hoc work outside the skill's scope. Skills
+  themselves don't depend on it.
+
 ### Added
 
 **`bonsai-walls` skill** (`bonsai_room_with_miters.py`, ~3500 lines):

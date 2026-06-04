@@ -45,11 +45,22 @@ the source and in each `SKILL.md`.
 ### Prerequisites
 
 - **Blender 5.1+** (https://www.blender.org/)
-- **Bonsai 0.8.5+** Blender add-on (https://bonsai.coop/)
-- **Bonsai MCP add-on** so Claude Code can drive Blender remotely
-  (https://github.com/JotaDeRodriguez/Bonsai_mcp)
+- **Bonsai 0.8.5+** Blender add-on (https://bonsai.coop/) — provides the
+  Python API (`from bonsai import tool`, `bpy.ops.bim.*`) the skills call
+- **BlenderMCP** (required) — https://github.com/ahujasid/blender-mcp
+  — exposes `execute_blender_code` so Claude Code can drive Blender
+- **ifc-bonsai-mcp** (recommended) — https://github.com/Show2Instruct/ifc-bonsai-mcp
+  — second MCP running inside Blender; exposes high-level IFC tools
+  (`create_wall`, `create_door`, etc.). The skills don't call these
+  directly, but the verified v0.1.0 development was done with this MCP
+  installed alongside BlenderMCP — keeping the parity makes
+  troubleshooting easier and lets Claude do ad-hoc IFC ops outside the
+  skill's scope.
 - **Claude Code** CLI (https://docs.claude.com/en/docs/claude-code/overview)
 - Python 3.13 (ships with Blender 5.1)
+
+> See [`INSTALL.md`](INSTALL.md#mcp-architecture-why-two-mcps) for the
+> full two-MCP architecture diagram and what each layer does.
 
 ### Install — three steps
 
@@ -75,8 +86,9 @@ the source and in each `SKILL.md`.
    New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.claude\skills\bonsai-drawings" -Target "$pwd\skills\bonsai-drawings"
    ```
 
-3. **Configure the Bonsai MCP server in Claude Code** so the agent can talk
-   to Blender. See [`INSTALL.md`](INSTALL.md) for the full step-by-step.
+3. **Configure BlenderMCP (and optionally ifc-bonsai-mcp) in Claude
+   Code** so the agent can talk to Blender. See [`INSTALL.md`](INSTALL.md)
+   for the full step-by-step.
 
 ### Run the smoke test
 
