@@ -236,9 +236,9 @@ If anything fails:
   Windows) for tracebacks.
 - Make sure the BlenderMCP server is still running (the sidebar panel
   toggles between "Connect" and "Disconnect").
-- Try running `skills/bonsai-walls/examples/build_room_4x6.py` directly
-  in Blender's Scripting workspace to isolate whether the issue is in
-  the skill or in the Claude Code wiring.
+- Try running `examples/build_room_4x6.py` directly in Blender's
+  Scripting workspace to isolate whether the issue is in the skill or
+  in the Claude Code wiring.
 
 ## 9. Output paths
 
