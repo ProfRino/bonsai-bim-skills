@@ -44,11 +44,11 @@ for d in SKILL_DIRS:
         sys.path.insert(0, d)
 # Force fresh import so edits to skill source take effect in the same
 # Blender session.
-for mod_name in ("bonsai_room_with_miters", "bonsai_drawings"):
+for mod_name in ("bonsai_bim_helpers", "bonsai_drawings"):
     if mod_name in sys.modules:
         del sys.modules[mod_name]
 
-import bonsai_room_with_miters as bw
+import bonsai_bim_helpers as bw
 import bonsai_drawings as bd
 from bonsai import tool
 

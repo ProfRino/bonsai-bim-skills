@@ -132,30 +132,86 @@ git clone https://github.com/<you>/bonsai-bim-skills.git
 cd bonsai-bim-skills
 ```
 
-## 7. Wire the skills into Claude Code
+## 7. Wire all 7 skills into Claude Code
 
 Claude Code loads skills from `~/.claude/skills/<skill-name>/`. The
 simplest setup is to symlink so edits in the repo propagate without
 copying.
 
+The 7 skills are:
+
+- `bonsai-walls` — walls + slabs + mitered corners + interior partition rules
+- `bonsai-openings` — doors + windows + equal-spacing rule + styling
+- `bonsai-roofs` — 4 roof topologies + IFC-correct wall fits
+- `bonsai-stairs` — parametric stairs + railings + stairwell voids
+- `bonsai-spaces-grid` — IfcSpace + IfcGrid (with bubble extension control)
+- `bonsai-project-setup` — bootstrap + storeys + audit + IDS + BCF
+- `bonsai-drawings` — Plan / Section / Elevation + dimensions + SVG
+
 **Linux / macOS:**
 ```bash
 mkdir -p ~/.claude/skills
-ln -s "$(pwd)/skills/bonsai-walls"    ~/.claude/skills/bonsai-walls
-ln -s "$(pwd)/skills/bonsai-drawings" ~/.claude/skills/bonsai-drawings
+for skill in bonsai-walls bonsai-openings bonsai-roofs bonsai-stairs \
+             bonsai-spaces-grid bonsai-project-setup bonsai-drawings; do
+    ln -s "$(pwd)/skills/$skill" ~/.claude/skills/$skill
+done
 ```
 
 **Windows (PowerShell, requires admin OR developer mode):**
 ```powershell
 New-Item -ItemType Directory -Path "$env:USERPROFILE\.claude\skills" -Force
-New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.claude\skills\bonsai-walls"    -Target "$pwd\skills\bonsai-walls"
-New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.claude\skills\bonsai-drawings" -Target "$pwd\skills\bonsai-drawings"
+foreach ($skill in 'bonsai-walls','bonsai-openings','bonsai-roofs','bonsai-stairs',
+                    'bonsai-spaces-grid','bonsai-project-setup','bonsai-drawings') {
+    New-Item -ItemType SymbolicLink `
+        -Path "$env:USERPROFILE\.claude\skills\$skill" `
+        -Target "$pwd\skills\$skill"
+}
 ```
 
 If symlinks are blocked, fall back to copying:
 ```powershell
-Copy-Item -Recurse "$pwd\skills\bonsai-walls"    "$env:USERPROFILE\.claude\skills\bonsai-walls"
-Copy-Item -Recurse "$pwd\skills\bonsai-drawings" "$env:USERPROFILE\.claude\skills\bonsai-drawings"
+foreach ($skill in 'bonsai-walls','bonsai-openings','bonsai-roofs','bonsai-stairs',
+                    'bonsai-spaces-grid','bonsai-project-setup','bonsai-drawings') {
+    Copy-Item -Recurse "$pwd\skills\$skill" "$env:USERPROFILE\.claude\skills\$skill"
+}
+```
+
+> **About the duplicate `bonsai_bim_helpers.py` copies**: Claude Code
+> expects each skill folder to be self-contained. The repo committed
+> identical copies of `bonsai_bim_helpers.py` into 6 of the 7 skill
+> folders so symlinking just works. Maintainers edit
+> `canonical/bonsai_bim_helpers.py` and run `python tools/sync_modules.py`
+> to update all 6 copies.
+
+## 7b. (Developers only) Clone the Bonsai / IfcOpenShell source
+
+Strongly recommended if you plan to write new helpers. The skills' code
+imports Bonsai's Python API directly (`from bonsai import tool`,
+`bpy.ops.bim.*`) — when something doesn't work the way you expect, the
+fastest debugging path is reading Bonsai's source.
+
+```bash
+# Clone next to (or anywhere convenient relative to) this repo
+git clone https://github.com/IfcOpenShell/IfcOpenShell.git
+```
+
+Key folders to bookmark:
+
+| Folder | What's there |
+|---|---|
+| `IfcOpenShell/src/bonsai/bonsai/bim/module/` | Bonsai's Blender operators (`bpy.ops.bim.*`). One subfolder per topic: `model/wall.py` for walls, `model/roof.py` for roofs, `drawing/` for plans/sections/elevations, etc. |
+| `IfcOpenShell/src/bonsai/bonsai/tool/` | `tool.Ifc` / `tool.Model` / `tool.Geometry` / `tool.Drawing` — the singletons our helpers call into. |
+| `IfcOpenShell/src/ifcopenshell-python/ifcopenshell/api/` | Low-level IfcOpenShell API: `geometry/connect_wall.py`, `feature/add_feature.py`, `grid/create_axis_curve.py`, etc. |
+| `IfcOpenShell/src/ifcopenshell-python/ifcopenshell/util/` | Helpers for reading IFC: `element.py` (get_psets, get_predefined_type), `placement.py` (matrix decomposition), `representation.py`. |
+
+The SKILL.md files reference these paths with `<your_local_clone>/`
+prefixes — replace with your actual clone location.
+
+Optional: set an env var so your editor's "Go to symbol" jumps into the
+right place:
+
+```bash
+export IFCOPENSHELL_REPO="$HOME/code/IfcOpenShell"
 ```
 
 ## 8. Verify

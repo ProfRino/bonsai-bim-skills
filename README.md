@@ -14,13 +14,26 @@ not Blender-only geometry that gets lost on export.
 
 ## What's in here
 
+**7 focused Claude Code skills**, each with its own `SKILL.md` that the
+agent loads automatically when its trigger words appear in your prompt:
+
 | Skill | What it does | Trigger words |
 |---|---|---|
-| **`bonsai-walls`** | Rooms with mitered corners, slabs, parametric doors/windows (BBIM_Door / BBIM_Window), 4 roof types (mono-pitch / hip / gable / flat), wall-to-roof fits via `IfcBooleanClippingResult`, interior partitions with auto-clip + auto-connect, parametric stairs + railings, IfcSpaces with space boundaries, project grids, IDS + BCF helpers, multi-angle audit screenshots. | "build a room", "add wall", "add window", "add roof", "add stair", "fit walls to roof", "subdivide a space", "add grid", "validate IDS" |
-| **`bonsai-drawings`** | `IfcAnnotation` cameras for Plan / Section / Elevation / Reflected Plan / Model views, SVG rendering via `bim.create_drawing`, dimensions (linear `IfcAnnotation` curves with auto-computed metre labels), drawing camera scale + extent control. | "create plan", "generate section", "elevation drawing", "add dimension" |
+| **`bonsai-walls`** | Rooms with mitered corners, exterior + interior partitions (auto-clip overshoot + same-thickness sibling auto-connect), floor slabs fitted to wall outlines | "build a room", "polyline walls", "interior wall", "partition", "fit slab" |
+| **`bonsai-openings`** | Parametric BBIM doors + windows, equally-spaced windows rule (the `gap = (L − N·W)/(N+1)` default), Frame/Glass/Panel styling, OverallWidth/Height filler | "add a door", "add a window", "equally spaced", "style openings" |
+| **`bonsai-roofs`** | 4 roof topologies (mono-pitch / hip / gable / flat), IFC-correct wall-to-roof fits via `IfcBooleanClippingResult` + `IfcHalfSpaceSolid` | "add roof", "fit walls to roof", "hip roof", "gable roof" |
+| **`bonsai-stairs`** | Parametric `BBIM_Stair` with proper `top_slab_depth` connection, stairwell `IfcOpeningElement` sized to actual last-tread (not bbox), guard + handrail `IfcRailing` | "add stairs", "stairwell", "railing", "handrail" |
+| **`bonsai-spaces-grid`** | `IfcSpace` (aggregated, with `IfcRelSpaceBoundary` + `Qto_SpaceBaseQuantities`), `IfcGrid` with configurable bubble extension (default 4 m so bubbles clear the dim chains) | "add a space", "space boundary", "project grid" |
+| **`bonsai-project-setup`** | `bootstrap_project` (dual wall types + slab type + 3 styles + spatial hierarchy), `add_storey`, MANDATORY multi-angle audit screenshots, `Qto_*` + `OverallWidth/Height` fillers, IDS authoring + validation, BCF round-trip | "bootstrap", "set up project", "add storey", "audit", "IDS", "BCF" |
+| **`bonsai-drawings`** | `IfcAnnotation` cameras for Plan / Section / Elevation / Reflected Plan / Model views, SVG rendering via `bim.create_drawing`, linear dimensions, scale + extent control | "create plan", "generate section", "elevation drawing", "add dimension" |
 
-Each skill has its own `SKILL.md` that Claude Code loads automatically when
-its trigger words appear in your prompt.
+All 6 element-related skills share the **same Python module**
+(`bonsai_bim_helpers.py`) — same source is copied into each skill folder
+so each skill is self-contained for Claude Code's skill loader. A
+`tools/sync_modules.py` script keeps the copies aligned with
+`canonical/bonsai_bim_helpers.py` (the source of truth) for maintainers.
+
+The `bonsai-drawings` skill has its own module (`bonsai_drawings.py`).
 
 ---
 
@@ -70,7 +83,7 @@ the source and in each `SKILL.md`.
    cd bonsai-bim-skills
    ```
 
-2. **Symlink (or copy) the skills into your Claude Code skill directory.**
+2. **Symlink (or copy) all 7 skills into your Claude Code skill directory.**
 
    The directory varies by platform:
    - Linux / macOS: `~/.claude/skills/`
@@ -78,12 +91,18 @@ the source and in each `SKILL.md`.
 
    ```bash
    # Linux / macOS
-   ln -s "$(pwd)/skills/bonsai-walls"    ~/.claude/skills/bonsai-walls
-   ln -s "$(pwd)/skills/bonsai-drawings" ~/.claude/skills/bonsai-drawings
+   for skill in bonsai-walls bonsai-openings bonsai-roofs bonsai-stairs \
+                bonsai-spaces-grid bonsai-project-setup bonsai-drawings; do
+       ln -s "$(pwd)/skills/$skill" ~/.claude/skills/$skill
+   done
 
-   # Windows PowerShell (run as administrator for symlinks; otherwise copy)
-   New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.claude\skills\bonsai-walls"    -Target "$pwd\skills\bonsai-walls"
-   New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.claude\skills\bonsai-drawings" -Target "$pwd\skills\bonsai-drawings"
+   # Windows PowerShell (requires admin OR Dev Mode for symlinks; else copy)
+   foreach ($skill in 'bonsai-walls','bonsai-openings','bonsai-roofs','bonsai-stairs',
+                       'bonsai-spaces-grid','bonsai-project-setup','bonsai-drawings') {
+       New-Item -ItemType SymbolicLink `
+           -Path "$env:USERPROFILE\.claude\skills\$skill" `
+           -Target "$pwd\skills\$skill"
+   }
    ```
 
 3. **Configure BlenderMCP (and optionally ifc-bonsai-mcp) in Claude
@@ -92,7 +111,7 @@ the source and in each `SKILL.md`.
 
 ### Run the smoke test
 
-Open Blender → Scripting workspace → open `skills/bonsai-walls/examples/build_room_4x6.py` → ▶ Run Script.
+Open Blender → Scripting workspace → open `examples/build_room_4x6.py` → ▶ Run Script.
 
 You should get:
 - A 4 × 6 m room with mitered corners (4 `IfcWall`)
@@ -139,22 +158,61 @@ bonsai-bim-skills/
 ├── LICENSE                            GPL-3.0 (matches Bonsai)
 ├── CHANGELOG.md                       per-release notes
 ├── INSTALL.md                         setup walkthrough
+├── canonical/
+│   └── bonsai_bim_helpers.py          SINGLE source of truth (~3500 lines)
 ├── docs/
-│   ├── architecture.md                how the skills fit together
-│   └── lessons-learned.md             49 hard-won rules baked in
+│   ├── architecture.md                how the skills fit together + how to extend
+│   └── lessons-learned.md             ~50 hard-won rules baked in
+├── examples/                          full standalone build scripts
+│   ├── build_room_4x6.py                  canonical smoke test
+│   ├── build_two_room_house.py            3-storey with stairs
+│   ├── build_office_10x20.py              the office in the screenshots
+│   └── test_roof_types.py                 4 roofs side-by-side
+├── tools/
+│   └── sync_modules.py                copy canonical/* into each skill folder
 └── skills/
-    ├── bonsai-walls/
-    │   ├── SKILL.md                   Claude Code skill manifest + usage
-    │   ├── bonsai_room_with_miters.py  core helpers (~3500 lines)
-    │   └── examples/
-    │       ├── build_room_4x6.py            canonical smoke test
-    │       ├── build_two_room_house.py      3-storey with stairs
-    │       ├── build_office_10x20.py        the office in the screenshots
-    │       └── test_roof_types.py           4 roofs side-by-side
-    └── bonsai-drawings/
+    ├── bonsai-walls/                  walls + slabs + mitered corners + interior partition rules
+    │   ├── SKILL.md
+    │   ├── bonsai_bim_helpers.py          (copy of canonical/)
+    │   └── bonsai_room_with_miters.py     backward-compat shim — `from bonsai_bim_helpers import *`
+    ├── bonsai-openings/               doors + windows + equal spacing + Frame/Glass/Panel styling
+    │   ├── SKILL.md
+    │   ├── bonsai_bim_helpers.py          (same copy)
+    │   └── bonsai_room_with_miters.py     (shim)
+    ├── bonsai-roofs/                  4 roof topologies + IFC-correct wall fits
+    │   ├── SKILL.md
+    │   ├── bonsai_bim_helpers.py
+    │   └── bonsai_room_with_miters.py
+    ├── bonsai-stairs/                 parametric stairs + railings + stairwell voids
+    │   ├── SKILL.md
+    │   ├── bonsai_bim_helpers.py
+    │   └── bonsai_room_with_miters.py
+    ├── bonsai-spaces-grid/            IfcSpace + IfcGrid with bubble-extension control
+    │   ├── SKILL.md
+    │   ├── bonsai_bim_helpers.py
+    │   └── bonsai_room_with_miters.py
+    ├── bonsai-project-setup/          bootstrap + storeys + audit + IDS + BCF
+    │   ├── SKILL.md
+    │   ├── bonsai_bim_helpers.py
+    │   └── bonsai_room_with_miters.py
+    └── bonsai-drawings/               Plan / Section / Elevation + dimensions + SVG
         ├── SKILL.md
-        └── bonsai_drawings.py
+        └── bonsai_drawings.py              its own module
 ```
+
+**Why each skill carries its own copy of `bonsai_bim_helpers.py`** —
+Claude Code's skill loader expects each `~/.claude/skills/<skill>/`
+folder to be SELF-CONTAINED (the Python files in it are added to
+`sys.path` automatically when the skill is active). Copying the module
+into every skill folder is the simplest way to keep that contract,
+while a small `tools/sync_modules.py` script keeps the 6 copies aligned
+with `canonical/bonsai_bim_helpers.py`. Maintainers edit the canonical
+copy, run `python tools/sync_modules.py`, commit.
+
+**Backward-compat shim** — the previous v0.1.0 module name was
+`bonsai_room_with_miters.py`. v0.2.0 renamed it to `bonsai_bim_helpers.py`
+(more accurate scope). The shim in each skill folder does
+`from bonsai_bim_helpers import *` so old user code keeps working.
 
 ---
 

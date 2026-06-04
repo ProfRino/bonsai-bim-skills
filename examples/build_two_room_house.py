@@ -49,9 +49,9 @@ STAIR_RISER = STOREY_H / (STAIR_NTREADS + 1)  # +1 for top step nibs
 
 if SKILL_DIR not in sys.path:
     sys.path.insert(0, SKILL_DIR)
-if "bonsai_room_with_miters" in sys.modules:
-    del sys.modules["bonsai_room_with_miters"]
-import bonsai_room_with_miters as bw
+if "bonsai_bim_helpers" in sys.modules:
+    del sys.modules["bonsai_bim_helpers"]
+import bonsai_bim_helpers as bw
 
 import bpy
 from bonsai import tool

@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] — 2026-06-04
+
+Repo restructure into 7 focused skills (was 2). No helper logic changes —
+this is a pure repackaging release. The Python module renames + folder
+restructure are the change.
+
+### Changed (breaking, with backward-compat shim)
+
+- **Renamed** `bonsai_room_with_miters.py` → `bonsai_bim_helpers.py`.
+  The old name was a historical artefact from when the module only
+  handled rooms-with-mitered-corners; it's now ~3500 lines spanning the
+  full BIM authoring surface (walls + openings + roofs + stairs +
+  spaces + grid + project setup + audit + IDS).
+
+  **Backward-compat shim** — each skill folder also ships a tiny
+  `bonsai_room_with_miters.py` that does `from bonsai_bim_helpers
+  import *`, so existing user code keeps working.
+
+- **Split `bonsai-walls` (monolithic) into 6 focused skills:**
+  - `bonsai-walls` — walls + slabs + mitered corners + interior
+    partition rules (auto-clip overshoot + same-thickness sibling
+    auto-connect).
+  - `bonsai-openings` — doors + windows + equal-spacing rule + Frame /
+    Glass / Panel styling + `OverallWidth/Height` filler.
+  - `bonsai-roofs` — 4 roof topologies + IFC-correct wall fits.
+  - `bonsai-stairs` — parametric stairs + railings + stairwell voids.
+  - `bonsai-spaces-grid` — `IfcSpace` + `IfcGrid` with
+    `extension` parameter.
+  - `bonsai-project-setup` — `bootstrap_project` + `add_storey` + audit
+    screenshots + Qto fillers + IDS + BCF.
+
+  Each skill has a focused SKILL.md (was one 30 KB SKILL.md covering
+  everything).
+
+- **Moved `examples/` from inside the skill folder up to repo root.**
+  Now `examples/build_*.py` instead of `skills/bonsai-walls/examples/`.
+
+- **Renamed import in examples** from
+  `import bonsai_room_with_miters as bw` to
+  `import bonsai_bim_helpers as bw`. The backward-compat shim means
+  third-party scripts using the old name still work.
+
+### Added
+
+- `canonical/bonsai_bim_helpers.py` — the SINGLE source of truth for
+  the helper module. The 6 element-related skill folders carry copies
+  for self-containment.
+- `tools/sync_modules.py` — copies `canonical/bonsai_bim_helpers.py`
+  into every element-related skill folder. Run after editing the
+  canonical module. Supports `--check` for CI drift detection.
+- `INSTALL.md` section 7b — "(Developers only) Clone the Bonsai /
+  IfcOpenShell source" — promoted from optional sidebar to a
+  first-class step for anyone writing new helpers, with a table of key
+  folders to bookmark.
+
+### Same as 0.1.0
+
+All helper behaviour, all 49+ baked-in rules, the GPL-3.0 license, the
+GPL-3-aligned MCP recommendations, the screenshot audit protocol, IDS
++ BCF integration. Nothing functional changed — just packaging.
+
+---
+
 ## [0.1.0] — 2026-06-04
 
 First public release. Two Claude Code skills covering programmatic IFC
