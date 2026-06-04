@@ -205,18 +205,35 @@ IDS catches DATA gaps that the screenshot audit can't see.
 ## BCF — round-trip via the issue file
 
 BCF (BIM Collaboration Format) is the standard for "here are 22 things
-I found wrong, with viewpoints" exchange. The skill emits a `.bcfzip`
-from IDS failures + can re-load it for visual hop-around in Bonsai.
+I found wrong, with viewpoints" exchange. v0.2.0 has NO baked BCF-author
+helper — the `.bcfzip` is produced inline via `ifctester.reporter.Bcf`,
+exactly as the example scripts do:
 
 ```python
-bcf_path = bw.bcf_from_ids_results(
-    results=results,
-    output_path=os.path.join(OUTPUT_DIR, "office_issues.bcfzip"),
-    project_name="10x20 office",
-)
-# Opens in Bonsai's BCF panel → bim.activate_bcf_viewpoint → camera
-# jumps to each issue location, viewport frames the offending element.
+import ifctester, ifctester.ids, ifctester.reporter
+
+ids = ifctester.ids.open(ids_path)
+ids.validate(ifc)                              # the IFC entity, in-memory
+
+bcf_rep = ifctester.reporter.Bcf(ids)
+bcf_rep.report()
+bcf_rep.to_file(os.path.join(OUTPUT_DIR, "office_issues.bcfzip"))
 ```
+
+A clean build produces a `.bcfzip` with 0 topics. The file opens in
+Bonsai's "BCF" sidebar panel — clicking each topic activates its
+viewpoint (camera + element selection).
+
+When activating BCF viewpoints in a Blender session, use the skill's
+`activate_bcf_viewpoint_safely(viewpoint_guid)` wrapper instead of the
+raw `bpy.ops.bim.activate_bcf_viewpoint`. The wrapper post-hides leaked
+visualisation helpers (BCF viewpoints carry
+`<Visibility DefaultVisibility="true"/>` which un-hides every helper
+object the operator created — clutters the viewport).
+
+⚠️ **TODO (roadmap)**: bake `bcf_from_ids_results(ids, output_path,
+project_name)` as a one-call helper so the ad-hoc 5 lines above
+collapse to one call. Not in v0.2.0.
 
 ## Two-layer audit principle
 

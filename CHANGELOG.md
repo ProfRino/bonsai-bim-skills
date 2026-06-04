@@ -64,7 +64,15 @@ restructure are the change.
 
 All helper behaviour, all 49+ baked-in rules, the GPL-3.0 license, the
 GPL-3-aligned MCP recommendations, the screenshot audit protocol, IDS
-+ BCF integration. Nothing functional changed — just packaging.
+authoring + validation, and the `activate_bcf_viewpoint_safely` wrapper.
+Nothing functional changed — just packaging.
+
+### Known roadmap (not in v0.2.0)
+
+- No baked `bcf_from_ids_results(...)` helper yet — the `.bcfzip`
+  emission is done inline via `ifctester.reporter.Bcf` (~5 lines, as
+  shown in `examples/build_room_4x6.py`). A one-call wrapper is on the
+  roadmap.
 
 ---
 
