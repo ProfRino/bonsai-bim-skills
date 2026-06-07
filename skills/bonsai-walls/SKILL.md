@@ -100,17 +100,17 @@ at Z=0 and walls rest cleanly on top.
 
 ### Prerequisites in the IFC project
 
-- An IFC project must exist (use `bootstrap_project()` from
+- An IFC project must exist (use `setup_project()` from
   [`bonsai-project-setup`](../bonsai-project-setup/) for a one-shot
   setup).
 - At least one `IfcWallType` with a material layer set so
   `tool.Model.get_material_layer_parameters(wall_type)["thickness"]`
-  returns a value. `bootstrap_project()` ships `WAL200` (200 mm
+  returns a value. `setup_project()` ships `WAL200` (200 mm
   exterior) and `WAL100` (100 mm interior) by default.
 
 ## Wall types convention — exterior vs interior
 
-`bootstrap_project(...)` creates **TWO** `IfcWallType` entries by default:
+`setup_project(...)` creates **TWO** `IfcWallType` entries by default:
 
 - **`WAL200`** — 200 mm thick. Exterior + structural use.
 - **`WAL100`** — 100 mm thick. Interior partitions.

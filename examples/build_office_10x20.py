@@ -71,16 +71,16 @@ _override.__enter__()
 
 
 # ===========================================================================
-# 1. PROJECT BOOTSTRAP
+# 1. PROJECT SETUP
 # ===========================================================================
-bw.bootstrap_project(
+bw.setup_project(
     project_name="10x20 office",
     exterior_wall_type_name="WAL200",
     exterior_wall_thickness=0.2,
     interior_wall_type_name="WAL100",
     interior_wall_thickness=0.1,
 )
-print("Bootstrap complete")
+print("Project setup complete")
 
 
 # ===========================================================================

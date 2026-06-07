@@ -48,12 +48,12 @@ _override.__enter__()
 
 
 # ---------------------------------------------------------------------------
-# Bootstrap (1 storey is enough — we're not testing multi-storey here)
+# Project setup (1 storey is enough — we're not testing multi-storey here)
 # ---------------------------------------------------------------------------
-boot = bw.bootstrap_project(
+project_info = bw.setup_project(
     project_name="Roof types comparison",
 )
-print(f"Bootstrap done")
+print(f"Project setup done")
 
 
 # ---------------------------------------------------------------------------

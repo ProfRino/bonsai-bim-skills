@@ -5,7 +5,7 @@ Usage:
     1. Open Blender (5.x) with the Bonsai add-on enabled.
     2. (Optional) Start a new blend file: File → New → General. If a Bonsai
        project is already loaded, this script will use it — otherwise it
-       will create one via bootstrap_project().
+       will create one via setup_project().
     3. Open the Scripting workspace and paste this script, or run via the
        Blender MCP `execute_blender_code` tool.
     4. Edit `OUTPUT_DIR` below to point at a writable folder.
@@ -96,11 +96,11 @@ _override.__enter__()  # apply for the rest of this script
 
 
 # ---------------------------------------------------------------------------
-# 1. Bootstrap — sets up IfcProject, Site, Building, Storey, wall + slab
+# 1. Project setup — creates IfcProject, Site, Building, Storey, wall + slab
 #    types (WAL100, FLR200), and Frame/Glass/Panel IfcSurfaceStyle items.
 #    Idempotent — safe to re-run.
 # ---------------------------------------------------------------------------
-boot = bw.bootstrap_project(
+project_info = bw.setup_project(
     project_name="Room 4x6 demo",
     site_name="My Site",
     building_name="My Building",
@@ -110,9 +110,9 @@ boot = bw.bootstrap_project(
     slab_type_name="FLR200",
     slab_thickness=SLAB_THICKNESS,
 )
-print("Bootstrapped project:", boot)
+print("Project set up:", project_info)
 ifc = tool.Ifc.get()
-storey = ifc.by_id(boot["storey"])
+storey = ifc.by_id(project_info["storey"])
 
 
 # ---------------------------------------------------------------------------

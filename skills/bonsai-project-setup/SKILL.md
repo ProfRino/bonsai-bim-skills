@@ -1,7 +1,7 @@
 ---
 name: bonsai-project-setup
 description: |
-  Bootstrap a Bonsai IFC project from scratch (IfcProject + Site/Building/
+  Set up a Bonsai IFC project from scratch (IfcProject + Site/Building/
   Storey + dual IfcWallType WAL200/WAL100 + IfcSlabType FLR200 + Frame/
   Glass/Panel IfcSurfaceStyle items linked to Blender materials), add
   additional IfcBuildingStorey entries, run mandatory multi-angle audit
@@ -11,12 +11,12 @@ description: |
   "validate IDS", or "save BCF".
 ---
 
-# bonsai-project-setup — project bootstrap + audit + IDS / BCF
+# bonsai-project-setup — project setup + audit + IDS / BCF
 
 ## When to use this
 
 Trigger on:
-- "set up a project", "bootstrap", "new IFC project", "initialise IFC"
+- "set up a project", "new IFC project", "initialise IFC", "start a project"
 - "add a storey", "add a floor", "second floor", "upper level"
 - "audit the model", "screenshot", "visual check"
 - "IDS", "validate", "validation report"
@@ -48,12 +48,12 @@ A project is more than geometry. Every IFC handover needs:
 
 This skill ships the helpers for all 6.
 
-## One-shot project bootstrap
+## One-shot project setup
 
 ```python
 import bonsai_bim_helpers as bw
 
-bw.bootstrap_project(
+bw.setup_project(
     project_name="10x20 office",
     site_name="Site",
     building_name="Building",
@@ -87,9 +87,10 @@ What it creates:
   points at the IFC style. This is what `apply_window_styles` /
   `apply_door_styles` from [`bonsai-openings`](../bonsai-openings/) use.
 
-Backward compat: old `bootstrap_project(wall_type_name="...",
+Backward compat: old `setup_project(wall_type_name="...",
 wall_thickness=...)` kwargs are still accepted — they alias to the
-EXTERIOR settings.
+EXTERIOR settings. The previous function name `bootstrap_project` is
+still callable as an alias for `setup_project`.
 
 ## Add additional storeys
 
@@ -271,7 +272,7 @@ they try to `mkdir("drawings")` in the process CWD.
   forget to deselect — the helper now does `select_all(DESELECT)` after
   framing.
 - **`bpy.ops.bim.create_project` reads scene props, not kwargs** —
-  `bootstrap_project` sets `BIMProjectProperties` on the scene before
+  `setup_project` sets `BIMProjectProperties` on the scene before
   calling the operator.
 - **Stair `top_slab_depth` MUST match the upper slab thickness** — see
   [`bonsai-stairs`](../bonsai-stairs/) for details.

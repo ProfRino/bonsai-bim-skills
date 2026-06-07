@@ -33,7 +33,7 @@ restructure are the change.
   - `bonsai-stairs` — parametric stairs + railings + stairwell voids.
   - `bonsai-spaces-grid` — `IfcSpace` + `IfcGrid` with
     `extension` parameter.
-  - `bonsai-project-setup` — `bootstrap_project` + `add_storey` + audit
+  - `bonsai-project-setup` — `setup_project` + `add_storey` + audit
     screenshots + Qto fillers + IDS + BCF.
 
   Each skill has a focused SKILL.md (was one 30 KB SKILL.md covering
@@ -93,7 +93,7 @@ Verified MCP stack for v0.1.0:
 
 **`bonsai-walls` skill** (`bonsai_room_with_miters.py`, ~3500 lines):
 
-- `bootstrap_project(...)` — full one-shot project setup: IfcProject +
+- `setup_project(...)` — full one-shot project setup: IfcProject +
   Site/Building/Storey + dual `IfcWallType` (WAL200 exterior 200 mm +
   WAL100 interior 100 mm sharing one Concrete IfcMaterial) + IfcSlabType
   (FLR200) + Frame / Glass / Panel `IfcSurfaceStyle` items linked to

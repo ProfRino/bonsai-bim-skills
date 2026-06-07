@@ -145,7 +145,7 @@ The 7 skills are:
 - `bonsai-roofs` — 4 roof topologies + IFC-correct wall fits
 - `bonsai-stairs` — parametric stairs + railings + stairwell voids
 - `bonsai-spaces-grid` — IfcSpace + IfcGrid (with bubble extension control)
-- `bonsai-project-setup` — bootstrap + storeys + audit + IDS + BCF
+- `bonsai-project-setup` — project setup + storeys + audit + IDS + BCF
 - `bonsai-drawings` — Plan / Section / Elevation + dimensions + SVG
 
 **Linux / macOS:**

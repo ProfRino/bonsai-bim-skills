@@ -24,7 +24,7 @@ agent loads automatically when its trigger words appear in your prompt:
 | **`bonsai-roofs`** | 4 roof topologies (mono-pitch / hip / gable / flat), IFC-correct wall-to-roof fits via `IfcBooleanClippingResult` + `IfcHalfSpaceSolid` | "add roof", "fit walls to roof", "hip roof", "gable roof" |
 | **`bonsai-stairs`** | Parametric `BBIM_Stair` with proper `top_slab_depth` connection, stairwell `IfcOpeningElement` sized to actual last-tread (not bbox), guard + handrail `IfcRailing` | "add stairs", "stairwell", "railing", "handrail" |
 | **`bonsai-spaces-grid`** | `IfcSpace` (aggregated, with `IfcRelSpaceBoundary` + `Qto_SpaceBaseQuantities`), `IfcGrid` with configurable bubble extension (default 4 m so bubbles clear the dim chains) | "add a space", "space boundary", "project grid" |
-| **`bonsai-project-setup`** | `bootstrap_project` (dual wall types + slab type + 3 styles + spatial hierarchy), `add_storey`, MANDATORY multi-angle audit screenshots, `Qto_*` + `OverallWidth/Height` fillers, IDS authoring + validation, BCF round-trip | "bootstrap", "set up project", "add storey", "audit", "IDS", "BCF" |
+| **`bonsai-project-setup`** | `setup_project` (dual wall types + slab type + 3 styles + spatial hierarchy), `add_storey`, MANDATORY multi-angle audit screenshots, `Qto_*` + `OverallWidth/Height` fillers, IDS authoring + validation, BCF round-trip | "set up project", "new IFC project", "add storey", "audit", "IDS", "BCF" |
 | **`bonsai-drawings`** | `IfcAnnotation` cameras for Plan / Section / Elevation / Reflected Plan / Model views, SVG rendering via `bim.create_drawing`, linear dimensions, scale + extent control | "create plan", "generate section", "elevation drawing", "add dimension" |
 
 All 6 element-related skills share the **same Python module**
@@ -191,7 +191,7 @@ bonsai-bim-skills/
     │   ├── SKILL.md
     │   ├── bonsai_bim_helpers.py
     │   └── bonsai_room_with_miters.py
-    ├── bonsai-project-setup/          bootstrap + storeys + audit + IDS + BCF
+    ├── bonsai-project-setup/          project setup + storeys + audit + IDS + BCF
     │   ├── SKILL.md
     │   ├── bonsai_bim_helpers.py
     │   └── bonsai_room_with_miters.py

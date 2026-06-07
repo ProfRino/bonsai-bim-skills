@@ -78,9 +78,9 @@ _override.__enter__()
 
 
 # ---------------------------------------------------------------------------
-# 1. Bootstrap + add the 3 storeys (L1 + L2 + L3)
+# 1. Project setup + add the 3 storeys (L1 + L2 + L3)
 # ---------------------------------------------------------------------------
-boot = bw.bootstrap_project(
+project_info = bw.setup_project(
     project_name="3-level test house",
     site_name="Site",
     building_name="House",
@@ -94,9 +94,9 @@ boot = bw.bootstrap_project(
     door_width=0.9,
     door_height=2.0,
 )
-print(f"Bootstrap: {boot}")
+print(f"Project set up: {project_info}")
 ifc = tool.Ifc.get()
-l1_storey = ifc.by_id(boot["storey"])
+l1_storey = ifc.by_id(project_info["storey"])
 l1_storey.Elevation = 0.0
 
 l2_storey = bw.add_storey("L2", elevation=STOREY_H + SLAB_T)

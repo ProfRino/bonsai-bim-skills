@@ -454,6 +454,139 @@ def apply_window_styles(window_obj, frame_style_name="Frame", glass_style_name="
     return styled
 
 
+def _obstacles_on_wall_local_x(wall_obj, clearance=0.05,
+                                  ifc_classes=("IfcWall",)):
+    """Find x-ranges in the wall's local frame where other IFC elements
+    sit, so windows can be placed around them.
+
+    The most common case: an interior partition wall T-junctions with
+    the host (exterior) wall. The partition's body XY-overlaps the host
+    wall at a small x-range; a window placed there would have the
+    partition right behind it — visible through the glass.
+
+    The default `ifc_classes=("IfcWall",)` only flags walls. Pass a
+    wider tuple (e.g. add "IfcDoor") to also block window placements
+    that would collide with existing doors / other openings.
+
+    Args:
+        wall_obj: the host IfcWall Blender object.
+        clearance: metres of padding added to each side of each obstacle.
+        ifc_classes: tuple of IFC class names to consider as obstacles.
+
+    Returns:
+        list[(x_min, x_max)] — local-X ranges to avoid, clamped to
+        the host wall's local length [0, L_local].
+    """
+    import bpy
+    from mathutils import Vector
+    bpy.context.view_layer.update()
+
+    obstacles = []
+    M_inv = wall_obj.matrix_world.inverted()
+    L_local = float(wall_obj.dimensions.x)
+
+    h_corners = [wall_obj.matrix_world @ Vector(c) for c in wall_obj.bound_box]
+    h_xs = [c.x for c in h_corners]; h_ys = [c.y for c in h_corners]
+    h_zs = [c.z for c in h_corners]
+    h_bbox = (min(h_xs), max(h_xs), min(h_ys), max(h_ys),
+              min(h_zs), max(h_zs))
+
+    for obj in bpy.data.objects:
+        if obj is wall_obj:
+            continue
+        entity = tool.Ifc.get_entity(obj)
+        if entity is None:
+            continue
+        if not any(entity.is_a(c) for c in ifc_classes):
+            continue
+        o_corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+        o_xs = [c.x for c in o_corners]; o_ys = [c.y for c in o_corners]
+        o_zs = [c.z for c in o_corners]
+        o_bbox = (min(o_xs), max(o_xs), min(o_ys), max(o_ys),
+                  min(o_zs), max(o_zs))
+        # Allow zero-overlap touches in XY: interior partition bodies often
+        # start exactly at the host wall's inner face (y_min of partition
+        # equals y_max of host). Z is checked SEPARATELY so we ignore walls
+        # on other storeys (an L2 wall sharing XY with an L1 partition is
+        # not actually behind an L1 window).
+        edge_tol = 1e-3
+        dx = min(h_bbox[1], o_bbox[1]) - max(h_bbox[0], o_bbox[0])
+        dy = min(h_bbox[3], o_bbox[3]) - max(h_bbox[2], o_bbox[2])
+        dz = min(h_bbox[5], o_bbox[5]) - max(h_bbox[4], o_bbox[4])
+        if dx < -edge_tol or dy < -edge_tol or dz <= edge_tol:
+            continue
+        # Use the obstacle's own XY bbox for projection (not the
+        # potentially-degenerate intersection rectangle), so we capture the
+        # full plan footprint of the partition where it meets the host.
+        ix_min = max(h_bbox[0], o_bbox[0])
+        ix_max = min(h_bbox[1], o_bbox[1])
+        iy_min = o_bbox[2]
+        iy_max = o_bbox[3]
+        local_xs = [(M_inv @ Vector((x, y, 0))).x
+                    for x in (ix_min, ix_max) for y in (iy_min, iy_max)]
+        x_min = min(local_xs) - clearance
+        x_max = max(local_xs) + clearance
+        x_min = max(0.0, x_min)
+        x_max = min(L_local, x_max)
+        if x_max - x_min > 1e-6:
+            obstacles.append((x_min, x_max))
+    return obstacles
+
+
+def _merge_and_subtract_ranges(segment, obstacles, tolerance=1e-3):
+    """Return list of sub-ranges of `segment` not covered by any obstacle.
+
+    Obstacles that overlap each other are merged first, so the output is
+    a clean list of disjoint sub-segments.
+    """
+    s_min, s_max = segment
+    obs = sorted((max(o0, s_min), min(o1, s_max))
+                 for o0, o1 in obstacles
+                 if o1 > s_min and o0 < s_max)
+    merged = []
+    for o_min, o_max in obs:
+        if merged and o_min <= merged[-1][1] + tolerance:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], o_max))
+        else:
+            merged.append((o_min, o_max))
+    subs = []
+    cursor = s_min
+    for o_min, o_max in merged:
+        if o_min > cursor:
+            subs.append((cursor, o_min))
+        cursor = max(cursor, o_max)
+    if cursor < s_max:
+        subs.append((cursor, s_max))
+    return [(a, b) for a, b in subs if b - a > tolerance]
+
+
+def _place_equally_spaced_in_segment(wall_obj, count, width, height,
+                                        sill_height, s0, s1, name_prefix,
+                                        skip_indices=None):
+    """Place `count` BBIM-parametric windows equally spaced in the host
+    wall's local-X range [s0, s1]. Internal helper for
+    add_equally_spaced_windows_to_wall.
+    """
+    from mathutils import Vector
+    seg_len = s1 - s0
+    gap = (seg_len - count * width) / (count + 1)
+    skips = set(skip_indices or ())
+    placed = []
+    for i in range(count):
+        if i in skips:
+            continue
+        center_local_x = s0 + (i + 1) * gap + (i + 0.5) * width
+        target_local = Vector((center_local_x - width / 2.0, 0.0, sill_height))
+        target_world = wall_obj.matrix_world @ target_local
+        name = f"{name_prefix}_{i + 1}" if name_prefix else None
+        result = add_parametric_window_to_wall(
+            wall_obj=wall_obj, target=target_world,
+            width=width, height=height, name=name,
+        )
+        placed.append(result)
+    return placed
+
+
 def add_equally_spaced_windows_to_wall(
     wall_obj,
     count,
@@ -463,56 +596,62 @@ def add_equally_spaced_windows_to_wall(
     segment=None,
     name_prefix=None,
     skip_indices=None,
+    avoid_interior_walls=True,
+    obstacles=None,
+    obstacle_clearance=0.05,
+    min_gap=0.05,
 ):
-    """Place `count` BBIM-parametric IfcWindow occurrences along a wall, equally
-    spaced and centred on the wall (or on the given segment).
+    """Place `count` BBIM-parametric IfcWindow occurrences along a wall,
+    equally spaced and centred. Defaults to auto-detecting interior
+    partition T-junctions and splitting around them.
 
-    DEFAULT SKILL RULE — When placing windows in a wall, always use this helper
-    unless the design specifically requires non-uniform spacing. It enforces:
+    DEFAULT SKILL RULE — When placing windows in a wall, always use this
+    helper unless the design specifically requires non-uniform spacing.
+    Within each placement sub-segment it enforces:
 
         gap = (L - N * W) / (N + 1)
 
-    so that the end-gap, every between-window gap, and the trailing end-gap are
-    all identical. This automatically CENTRES the run on the wall (with N=1 the
-    single window sits at exactly L/2). The opposite face of the wall stays the
-    interior surface — windows host on the outside.
+    so end-gaps and between-window gaps are identical (auto-centres N=1
+    at the segment midpoint).
 
-    Window centres land at:
-        c_i = (i+1) * gap + (i + 0.5) * W,     i = 0 … N-1
+    INTERIOR-PARTITION AVOIDANCE (new default):
+    With `avoid_interior_walls=True` the helper walks every IfcWall in
+    the project, finds those whose XY footprint intersects the host
+    wall's footprint (typically interior partitions T-junctioning with
+    this exterior wall), and SPLITS the segment around those obstacles.
+    The requested `count` is then distributed proportionally across the
+    valid sub-segments — never placing a window directly behind an
+    interior partition (a hidden-collision issue that doesn't appear in
+    a body-vs-body bbox check).
 
     Args:
-        wall_obj: the IfcWall Blender object to host the windows. Must have its
-            local +X axis along its length and local +Y pointing INTO the room
-            (true for every wall built by `create_room_with_mitered_corners` /
-            `add_interior_wall`).
-        count: number of windows to place in the segment.
-        width: BBIM_Window overall_width (metres). Default 0.9 matches the
-            single-window helper.
-        height: BBIM_Window overall_height (metres). Default 1.2.
-        sill_height: distance from base of wall to bottom of window (metres).
-            Default 0.9 m — typical for a 3 m wall.
-        segment: optional (start, end) in metres along the wall's local X axis
-            (0 = wall start). None → full wall length. Use this to split a wall
-            around an obstacle. Example: for a 20 m south wall with a 1.2 m
-            door centred at x=10, call twice:
-                add_equally_spaced_windows_to_wall(s, count=2, segment=(0, 9.4))
-                add_equally_spaced_windows_to_wall(s, count=2, segment=(10.6, 20))
-            Each side then gets its own equal-spacing pattern.
-        name_prefix: optional prefix; windows are named "{prefix}_{i+1}".
-            None → leaves Bonsai's default Window names.
-        skip_indices: optional iterable of 0-based slot indices to skip (no
-            window placed). Useful when the regular pitch lands a window on
-            top of a known obstacle.
-
-    Raises:
-        ValueError if the requested count cannot fit in the segment
-        (count * width > segment length).
+        wall_obj: the IfcWall Blender object to host the windows.
+        count: target number of windows. If obstacle splitting leaves
+            fewer slots than `count`, fewer are placed (no exception).
+        width, height, sill_height: BBIM_Window dimensions in metres.
+        segment: optional (start, end) along the wall's local X axis.
+            None → full wall length. Used WITH obstacle detection: the
+            helper subtracts obstacles from this segment.
+        name_prefix: optional prefix; windows are named
+            "{prefix}_{sub_idx}_{i+1}" when split across sub-segments
+            and "{prefix}_{i+1}" when there's a single segment.
+        skip_indices: optional 0-based slot indices to skip (only
+            applies when there are no obstacles → single-segment mode).
+        avoid_interior_walls: if True (default), auto-detect obstacles
+            from any IfcWall touching the host wall and split around
+            them. Set False to keep the legacy single-segment behavior.
+        obstacles: optional explicit list of (x_min, x_max) ranges to
+            avoid, in the host wall's local-X frame. Merged with
+            auto-detected obstacles when `avoid_interior_walls=True`.
+        obstacle_clearance: metres of padding around each detected /
+            specified obstacle.
+        min_gap: minimum gap (metres) between a window edge and the
+            sub-segment edge; used to compute each sub-segment's
+            maximum window capacity.
 
     Returns:
         list[(filling_obj, ifc_entity)] — one entry per window placed.
     """
-    from mathutils import Vector
-
     L_local = wall_obj.dimensions.x   # wall length in local frame
     s0, s1 = (0.0, L_local) if segment is None else segment
     seg_len = s1 - s0
@@ -521,34 +660,77 @@ def add_equally_spaced_windows_to_wall(
             f"Invalid segment {segment} on wall {wall_obj.name} "
             f"of length {L_local:.3f} m"
         )
-    if count * width > seg_len:
-        raise ValueError(
-            f"Cannot fit {count} windows of width {width:.3f} m in a "
-            f"{seg_len:.3f} m segment on {wall_obj.name}. "
-            f"Max count = {int(seg_len // width)}."
+
+    obs = list(obstacles or [])
+    if avoid_interior_walls:
+        obs.extend(_obstacles_on_wall_local_x(
+            wall_obj, clearance=obstacle_clearance,
+        ))
+
+    # Fast path — no obstacles → original equally-spaced behaviour.
+    if not obs:
+        if count * width > seg_len:
+            raise ValueError(
+                f"Cannot fit {count} windows of width {width:.3f} m in a "
+                f"{seg_len:.3f} m segment on {wall_obj.name}. "
+                f"Max count = {int(seg_len // width)}."
+            )
+        return _place_equally_spaced_in_segment(
+            wall_obj, count, width, height, sill_height,
+            s0, s1, name_prefix, skip_indices,
         )
 
-    gap = (seg_len - count * width) / (count + 1)
-    skips = set(skip_indices or ())
+    # Split into sub-segments around obstacles.
+    sub_segs = _merge_and_subtract_ranges((s0, s1), obs)
+
+    def _max_fit(L):
+        # gap = (L - N*W)/(N+1) >= min_gap → N <= (L - min_gap)/(W + min_gap)
+        if L < width + 2 * min_gap:
+            return 0
+        return max(0, int((L - min_gap) / (width + min_gap)))
+
+    capable = [
+        {"range": (a, b), "length": b - a, "max": _max_fit(b - a)}
+        for a, b in sub_segs
+    ]
+    capable = [c for c in capable if c["max"] > 0]
+    if not capable:
+        return []
+
+    total_length = sum(c["length"] for c in capable)
+    total_max = sum(c["max"] for c in capable)
+    n_to_place = min(count, total_max)
+
+    # Proportional allocation by sub-segment length, then adjust to total.
+    allocations = [
+        min(c["max"], max(0, round(n_to_place * c["length"] / total_length)))
+        for c in capable
+    ]
+    delta = n_to_place - sum(allocations)
+    i = 0
+    while delta != 0 and i < 1000:
+        j = i % len(allocations)
+        if delta > 0 and allocations[j] < capable[j]["max"]:
+            allocations[j] += 1
+            delta -= 1
+        elif delta < 0 and allocations[j] > 0:
+            allocations[j] -= 1
+            delta += 1
+        i += 1
+
     placed = []
-    for i in range(count):
-        if i in skips:
+    for sub_idx, (info, alloc) in enumerate(zip(capable, allocations), start=1):
+        if alloc <= 0:
             continue
-        center_local_x = s0 + (i + 1) * gap + (i + 0.5) * width
-        # target = window's left edge on the OUTSIDE wall face (local Y = 0).
-        # add_parametric_window_to_wall grows the window in +local-X from
-        # this target, so its centre lands exactly at center_local_x.
-        target_local = Vector((center_local_x - width / 2.0, 0.0, sill_height))
-        target_world = wall_obj.matrix_world @ target_local
-        name = f"{name_prefix}_{i + 1}" if name_prefix else None
-        result = add_parametric_window_to_wall(
-            wall_obj=wall_obj,
-            target=target_world,
-            width=width,
-            height=height,
-            name=name,
+        sub_min, sub_max = info["range"]
+        sub_prefix = (f"{name_prefix}_{sub_idx}"
+                      if (name_prefix and len(capable) > 1)
+                      else name_prefix)
+        sub_placed = _place_equally_spaced_in_segment(
+            wall_obj, alloc, width, height, sill_height,
+            sub_min, sub_max, sub_prefix, skip_indices=None,
         )
-        placed.append(result)
+        placed.extend(sub_placed)
     return placed
 
 
@@ -698,7 +880,7 @@ def style_all_openings(
 
     Args:
         frame_style_name: project IfcSurfaceStyle name for frame parts.
-            Default "Frame" matches `bootstrap_project()` output.
+            Default "Frame" matches `setup_project()` output.
         glass_style_name: project IfcSurfaceStyle for window glass.
         panel_style_name: project IfcSurfaceStyle for door panels.
         style_types: if True, run the styling on every IfcWindowType +
@@ -2039,11 +2221,17 @@ def fit_walls_to_mono_pitch_roof(
 def add_stairwell_opening_for_stair(
     stair_obj,
     slab_obj,
-    x_margin=0.1,
-    y_min_margin=0.1,
-    y_max_margin=0.0,
+    bottom_margin=0.1,
+    top_margin=0.0,
+    side_min_margin=0.1,
+    side_max_margin=0.1,
     void_z_below_slab=0.1,
     void_z_above_slab=0.2,
+    # Legacy params — applied as overrides if not None for back-compat with
+    # callers from before direction-aware void sizing was added.
+    x_margin=None,
+    y_min_margin=None,
+    y_max_margin=None,
 ):
     """Add a properly-fitted IfcOpeningElement to a slab where a stair penetrates.
 
@@ -2051,23 +2239,33 @@ def add_stairwell_opening_for_stair(
     mechanism doors use to void walls). Survives IFC export/round-trip, unlike
     a Blender Boolean modifier.
 
-    Critical detail learned the hard way: the stair's BOUNDING BOX y_max
-    extends past the LAST TREAD's back edge because of the `top_slab_depth`
-    landing extension (the "top nib" that integrates with the upper slab).
-    Sizing the opening to the bbox creates an empty strip beyond where the
-    user actually steps off the stair. This helper finds the actual
-    last-tread back edge by inspecting vertices at the stair's top_z plane.
+    Critical detail learned the hard way: the stair's BOUNDING BOX max in the
+    run direction extends past the LAST TREAD's back edge because of the
+    `top_slab_depth` landing nib that integrates with the upper slab. Sizing
+    the opening to the bbox creates an empty strip beyond where the user
+    actually steps off the stair. This helper finds the actual last-tread
+    back edge by inspecting vertices at the stair's top_z plane, then
+    determines the stair's RUN DIRECTION from the object's rotation_z so the
+    "flush" exit margin is applied to the correct axis for any orientation.
 
     Args:
         stair_obj: Blender object for the IfcStair.
         slab_obj: Blender object for the upper IfcSlab to be voided.
-        x_margin: clearance on each side of the stair width (default 100mm).
-        y_min_margin: clearance at the bottom (start) of the stair where
-                      headroom is needed (default 100mm).
-        y_max_margin: clearance past the last tread back edge — keep 0 for
-                      a flush stair-to-floor transition.
-        void_z_below_slab / void_z_above_slab: extrusion margin so the void
+        bottom_margin: clearance at the foot of the stair along the run
+                      direction (entry side, default 100 mm) — gives headroom
+                      to the person walking up.
+        top_margin: clearance past the last tread back edge along the run
+                      direction (exit side) — keep 0 for a flush stair-to-floor
+                      transition so the slab body reaches the last tread.
+        side_min_margin / side_max_margin: clearances perpendicular to the run
+                      direction. Set the wall-flush side to 0 when the stair
+                      sits against a wall.
+        void_z_below_slab / void_z_above_slab: extrusion margins so the void
                       cleanly passes through the slab thickness.
+        x_margin, y_min_margin, y_max_margin: LEGACY params. If passed, they
+                      override the new-style margins (back-compat for callers
+                      that targeted a +Y-direction stair under the previous
+                      hardcoded axis assumption).
 
     Returns:
         The created IfcOpeningElement entity.
@@ -2077,6 +2275,7 @@ def add_stairwell_opening_for_stair(
         - IfcExtrudedAreaSolid with IfcRectangleProfileDef for the void shape
         - Placement via geometry.edit_object_placement(is_si=True)
     """
+    import math
     import numpy as np
     import ifcopenshell.api
     import ifcopenshell.util.representation as rep_util
@@ -2085,25 +2284,60 @@ def add_stairwell_opening_for_stair(
     ifc = tool.Ifc.get()
     slab_ent = tool.Ifc.get_entity(slab_obj)
 
-    # Find the actual last-tread back edge (NOT bbox max)
+    # Apply legacy overrides — preserves prior call sites' behaviour when
+    # the stair was assumed to run in +Y.
+    if x_margin is not None:
+        side_min_margin = side_max_margin = float(x_margin)
+    if y_min_margin is not None:
+        bottom_margin = float(y_min_margin)
+    if y_max_margin is not None:
+        top_margin = float(y_max_margin)
+
+    # Detect run direction from rotation_z (snap to nearest quarter turn).
+    rot_z = stair_obj.rotation_euler.z % (2 * math.pi)
+    quarter_idx = round(rot_z / (math.pi / 2)) % 4   # 0=+X, 1=+Y, 2=-X, 3=-Y
+
+    # Find the last tread back edge — vertices at the stair's top z surface.
+    # The nib extends past these vertices along the run direction and is
+    # supposed to lie ON the slab body, so the void should END at the last
+    # tread back (NOT include the nib area).
     verts_world = [stair_obj.matrix_world @ v.co for v in stair_obj.data.vertices]
     top_z = max(v.z for v in verts_world)
-    top_surface_ys = [v.y for v in verts_world if abs(v.z - top_z) < 0.01]
-    last_step_back_y = max(top_surface_ys)
+    top_surface = [v for v in verts_world if abs(v.z - top_z) < 0.01]
+    bbox_x_min = min(v.x for v in verts_world)
+    bbox_x_max = max(v.x for v in verts_world)
+    bbox_y_min = min(v.y for v in verts_world)
+    bbox_y_max = max(v.y for v in verts_world)
 
-    stair_x_min = min(v.x for v in verts_world)
-    stair_x_max = max(v.x for v in verts_world)
-    stair_y_min = min(v.y for v in verts_world)
+    if quarter_idx == 0:    # stair climbs +X
+        last_step_back = max(v.x for v in top_surface)
+        void_x_min = bbox_x_min - bottom_margin
+        void_x_max = last_step_back + top_margin
+        void_y_min = bbox_y_min - side_min_margin
+        void_y_max = bbox_y_max + side_max_margin
+    elif quarter_idx == 1:  # stair climbs +Y
+        last_step_back = max(v.y for v in top_surface)
+        void_x_min = bbox_x_min - side_min_margin
+        void_x_max = bbox_x_max + side_max_margin
+        void_y_min = bbox_y_min - bottom_margin
+        void_y_max = last_step_back + top_margin
+    elif quarter_idx == 2:  # stair climbs -X
+        last_step_back = min(v.x for v in top_surface)
+        void_x_min = last_step_back - top_margin
+        void_x_max = bbox_x_max + bottom_margin
+        void_y_min = bbox_y_min - side_min_margin
+        void_y_max = bbox_y_max + side_max_margin
+    else:                    # 3, stair climbs -Y
+        last_step_back = min(v.y for v in top_surface)
+        void_x_min = bbox_x_min - side_min_margin
+        void_x_max = bbox_x_max + side_max_margin
+        void_y_min = last_step_back - top_margin
+        void_y_max = bbox_y_max + bottom_margin
 
     # Slab world Z extents
     slab_corners = [slab_obj.matrix_world @ Vector(c) for c in slab_obj.bound_box]
     slab_z_min = min(c.z for c in slab_corners)
     slab_z_max = max(c.z for c in slab_corners)
-
-    void_x_min = stair_x_min - x_margin
-    void_x_max = stair_x_max + x_margin
-    void_y_min = stair_y_min - y_min_margin
-    void_y_max = last_step_back_y + y_max_margin     # FLUSH with actual last step
 
     void_w = void_x_max - void_x_min
     void_l = void_y_max - void_y_min
@@ -2404,7 +2638,291 @@ def add_parametric_railing(path_points, height=1.1, name="Railing",
     rp.height = float(height)
     bpy.ops.bim.finish_editing_railing()
 
+    # Bonsai's add_railing flow stamps the entity with PredefinedType=
+    # "USERDEFINED" + ObjectType="FRAMELESS_PANEL" regardless of what
+    # was passed to assign_class. Force the IFC4 canonical enum value
+    # afterward so downstream tools see the intended classification.
+    railing_entity = tool.Ifc.get_entity(obj)
+    if railing_entity is not None:
+        valid_types = {"HANDRAIL", "GUARDRAIL", "BALUSTRADE",
+                       "USERDEFINED", "NOTDEFINED"}
+        wanted = predefined_type.upper()
+        if wanted in valid_types:
+            railing_entity.PredefinedType = wanted
+            if wanted != "USERDEFINED":
+                try:
+                    railing_entity.ObjectType = None
+                except Exception:
+                    pass
+
     obj.name = f"IfcRailing/{name}"
+    return obj
+
+
+def add_baluster_railing(
+    path_points,
+    height=1.0,
+    baluster_spacing=0.10,
+    baluster_size=0.03,
+    rail_size=0.06,
+    name="Balustrade",
+    predefined_type="BALUSTRADE",
+    inset_start=0.0,
+    inset_end=0.0,
+):
+    """Build an IfcRailing with vertical baluster posts + a top rail.
+
+    BIM-CORRECT but NOT BBIM-parametric: produces a real `IfcRailing`
+    entity with the requested PredefinedType. Bonsai's parametric
+    `BBIM_Railing` only ships two presets (`FRAMELESS_PANEL` and
+    `WALL_MOUNTED_HANDRAIL`), neither of which is the traditional
+    baluster-and-handrail look. This helper constructs that geometry
+    directly as a Blender mesh, then wraps it as an IfcRailing —
+    surviving IFC export with the correct class + predefined type.
+
+    Geometry produced (in world space):
+      - N vertical baluster boxes (`baluster_size` square cross-section)
+        at `baluster_spacing` centres along the path, each rising
+        `height` metres above the path z at that point.
+      - One sloped top rail box (`rail_size` square cross-section)
+        connecting the tops of the first and last baluster.
+
+    Args:
+        path_points: list of (x, y, z) — at least 2 points. z is the
+            BASE of the railing (typically the tread/floor surface).
+            For a stair railing, pass (bottom_x, bottom_y, 0.0) and
+            (top_x, top_y, stair_height).
+        height: vertical distance from the path to the top rail
+            (default 1.0 m). For a code-compliant guardrail use 1.1 m.
+        baluster_spacing: centre-to-centre spacing of balusters
+            (default 100 mm). Typical residential is 80-110 mm so a
+            100 mm sphere can't pass between them.
+        baluster_size: cross-section of each baluster (default 30 mm
+            square). Match to your visual target — round timber, square
+            stock, etc. all read the same at building scale.
+        rail_size: cross-section of the top rail (default 60 mm square).
+        name: object name; gets prefixed with "IfcRailing/".
+        predefined_type: IFC4 `IfcRailing.PredefinedType` enum value.
+            Defaults to BALUSTRADE; use GUARDRAIL for a code-compliant
+            fall-protection rail (1.1 m height), HANDRAIL for a
+            stair-side hand rail (0.9 m height).
+
+    Returns:
+        Blender object (IfcRailing).
+
+    Caveats:
+        - The geometry isn't editable from the Bonsai sidebar (no
+          BBIM_Railing pset). To re-pitch / re-space, re-call this
+          helper with new parameters.
+        - The path's cross-section frame uses world Y as the "right"
+          axis. For railings whose path isn't roughly aligned with X
+          or with X+Z slope, the top rail may not orient correctly —
+          extend the helper or pre-rotate the path.
+    """
+    import bmesh
+    import bpy
+    from mathutils import Vector
+
+    if len(path_points) < 2:
+        raise ValueError("add_baluster_railing needs at least 2 path points")
+
+    pts = [Vector(p) for p in path_points]
+    mesh = bpy.data.meshes.new(f"{name}_mesh")
+    bm = bmesh.new()
+
+    def _add_box(centre, x_axis, y_axis, z_axis, sx, sy, sz):
+        corners = []
+        for ix in (-1, 1):
+            for iy in (-1, 1):
+                for iz in (-1, 1):
+                    corners.append(centre
+                                   + x_axis * (ix * sx)
+                                   + y_axis * (iy * sy)
+                                   + z_axis * (iz * sz))
+        v = [bm.verts.new(tuple(p)) for p in corners]
+        bm.faces.new([v[0], v[2], v[3], v[1]])
+        bm.faces.new([v[4], v[5], v[7], v[6]])
+        bm.faces.new([v[0], v[1], v[5], v[4]])
+        bm.faces.new([v[2], v[6], v[7], v[3]])
+        bm.faces.new([v[0], v[4], v[6], v[2]])
+        bm.faces.new([v[1], v[3], v[7], v[5]])
+
+    # Per-segment placement of balusters + top rail
+    n_segments = len(pts) - 1
+    for i in range(n_segments):
+        p0, p1 = Vector(pts[i]), Vector(pts[i + 1])
+        seg = p1 - p0
+        seg_len = seg.length
+        if seg_len < 1e-6:
+            continue
+        seg_dir = seg.normalized()
+        # Apply inset trims so balusters + top rail stop short of the
+        # path endpoints. Use when the railing terminates at a newel
+        # post (or any other fixed element you don't want to interpenetrate).
+        if i == 0 and inset_start > 1e-6:
+            trim = min(inset_start, seg_len - 1e-3)
+            p0 = p0 + seg_dir * trim
+            seg = p1 - p0
+            seg_len = seg.length
+            if seg_len < 1e-6:
+                continue
+            seg_dir = seg.normalized()
+        if i == n_segments - 1 and inset_end > 1e-6:
+            trim = min(inset_end, seg_len - 1e-3)
+            p1 = p1 - seg_dir * trim
+            seg = p1 - p0
+            seg_len = seg.length
+            if seg_len < 1e-6:
+                continue
+            seg_dir = seg.normalized()
+        n_bal = max(2, int(seg_len / baluster_spacing) + 1)
+        for j in range(n_bal):
+            t = j / (n_bal - 1)
+            base = p0 + seg * t
+            centre = Vector((base.x, base.y, base.z + height / 2))
+            _add_box(
+                centre,
+                x_axis=Vector((1, 0, 0)),
+                y_axis=Vector((0, 1, 0)),
+                z_axis=Vector((0, 0, 1)),
+                sx=baluster_size / 2,
+                sy=baluster_size / 2,
+                sz=height / 2,
+            )
+        # Derive a stable orthonormal cross-section frame for the top rail.
+        # Use the horizontal projection of seg_dir to pick "right" so that
+        # segments running along ±Y, ±X, and along a sloped diagonal all
+        # produce a non-degenerate box.
+        world_up = Vector((0, 0, 1))
+        seg_h = Vector((seg_dir.x, seg_dir.y, 0))
+        if seg_h.length > 1e-6:
+            seg_h.normalize()
+            right = world_up.cross(seg_h)
+            if right.length < 1e-6:
+                right = Vector((0, 1, 0))
+            right.normalize()
+        else:
+            right = Vector((0, 1, 0))
+        up = seg_dir.cross(right)
+        if up.length < 1e-6:
+            up = world_up
+        up.normalize()
+        rail_start = p0 + Vector((0, 0, height))
+        rail_end = p1 + Vector((0, 0, height))
+        rail_centre = (rail_start + rail_end) / 2
+        _add_box(
+            rail_centre,
+            x_axis=seg_dir, y_axis=right, z_axis=up,
+            sx=seg_len / 2, sy=rail_size / 2, sz=rail_size / 2,
+        )
+
+    bm.to_mesh(mesh)
+    bm.free()
+
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.collection.objects.link(obj)
+
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+
+    # Assign as IfcRailing — use USERDEFINED placeholder, then force the
+    # canonical IFC4 enum value directly on the entity (the assign_class
+    # operator's enum wrapper doesn't accept BALUSTRADE).
+    bpy.ops.bim.assign_class(ifc_class="IfcRailing",
+                              predefined_type="USERDEFINED")
+    entity = tool.Ifc.get_entity(obj)
+    if entity is not None:
+        entity.Name = name
+        valid = {"HANDRAIL", "GUARDRAIL", "BALUSTRADE",
+                 "USERDEFINED", "NOTDEFINED"}
+        wanted = predefined_type.upper()
+        if wanted in valid:
+            entity.PredefinedType = wanted
+            if wanted != "USERDEFINED":
+                try:
+                    entity.ObjectType = None
+                except Exception:
+                    pass
+
+    obj.name = f"IfcRailing/{name}"
+    return obj
+
+
+def add_newel_post(
+    location,
+    height=1.1,
+    size=0.10,
+    name="NewelPost",
+    ifc_class="IfcMember",
+    predefined_type="POST",
+):
+    """Add a vertical newel post — the structural anchor where a stair
+    balustrade meets an upper-floor stairwell guard.
+
+    BIM-CORRECT: by default the post is classified as `IfcMember` with
+    `PredefinedType=POST` (the IFC4 enum value for railing posts /
+    structural posts). At the top of a straight stair the post sits on
+    the upper slab body, just outside the stairwell void, and is the
+    point where the sloped stair rail and the horizontal landing guard
+    physically meet.
+
+    Geometry: a square-section box of `size × size` cross-section,
+    extruded vertically from `location.z` for `height` metres.
+
+    Args:
+        location: (x, y, z) — base centre of the post. z should be the
+            FLOOR SURFACE the post sits on (e.g. 3.2 m for L2 floor
+            with a 200 mm slab whose top is at z=3.2).
+        height: vertical extent above the base (default 1.1 m — matches
+            standard guardrail height; the post should be at least as
+            tall as the taller of the two rails it anchors).
+        size: cross-section (square) in metres (default 100 mm).
+        name: object name; gets "Ifc{ifc_class}/" prefix.
+        ifc_class: IFC class to assign. Default "IfcMember" — semantically
+            correct for railing posts. Use "IfcBuildingElementProxy" if
+            you specifically want a generic catch-all.
+        predefined_type: PredefinedType enum value. Default "POST".
+
+    Returns:
+        Blender object.
+    """
+    import bmesh
+    cx, cy, base_z = float(location[0]), float(location[1]), float(location[2])
+    half = size / 2.0
+    top_z = base_z + height
+
+    mesh = bpy.data.meshes.new(f"{name}_mesh")
+    bm = bmesh.new()
+    pts = [
+        (cx - half, cy - half, base_z), (cx + half, cy - half, base_z),
+        (cx + half, cy + half, base_z), (cx - half, cy + half, base_z),
+        (cx - half, cy - half, top_z),  (cx + half, cy - half, top_z),
+        (cx + half, cy + half, top_z),  (cx - half, cy + half, top_z),
+    ]
+    v = [bm.verts.new(p) for p in pts]
+    bm.faces.new([v[0], v[1], v[2], v[3]])
+    bm.faces.new([v[4], v[7], v[6], v[5]])
+    bm.faces.new([v[0], v[4], v[5], v[1]])
+    bm.faces.new([v[1], v[5], v[6], v[2]])
+    bm.faces.new([v[2], v[6], v[7], v[3]])
+    bm.faces.new([v[3], v[7], v[4], v[0]])
+    bm.to_mesh(mesh)
+    bm.free()
+
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.collection.objects.link(obj)
+
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.bim.assign_class(ifc_class=ifc_class,
+                              predefined_type=predefined_type)
+    entity = tool.Ifc.get_entity(obj)
+    if entity is not None:
+        entity.Name = name
+
+    obj.name = f"{ifc_class}/{name}"
     return obj
 
 
@@ -2847,7 +3365,7 @@ def add_storey(name, elevation, building=None):
     into the IfcBuilding via IfcRelAggregates. Returns the new storey
     entity.
 
-    Why: `bootstrap_project()` creates a single "My Storey" at z=0. For
+    Why: `setup_project()` creates a single "My Storey" at z=0. For
     multi-level buildings you need additional storeys — each elevation
     corresponds to the floor level (top of the slab below). IfcSpaces,
     walls and slabs that belong to a specific storey should be aggregated
@@ -2871,7 +3389,7 @@ def add_storey(name, elevation, building=None):
     if building is None:
         buildings = ifc.by_type("IfcBuilding")
         if not buildings:
-            raise RuntimeError("No IfcBuilding in project. Run bootstrap_project() first.")
+            raise RuntimeError("No IfcBuilding in project. Run setup_project() first.")
         building = buildings[0]
 
     storey = ifcopenshell.api.root.create_entity(
@@ -2881,6 +3399,15 @@ def add_storey(name, elevation, building=None):
     ifcopenshell.api.aggregate.assign_object(
         ifc, products=[storey], relating_object=building,
     )
+
+    # Create a Blender empty so the storey appears in Bonsai's Spatial
+    # Decomposition panel and downstream operators (assign container,
+    # active default, etc.) can resolve it as a Blender object.
+    obj = bpy.data.objects.new(f"IfcBuildingStorey/{name}", None)
+    obj.location = (0.0, 0.0, float(elevation))
+    bpy.context.collection.objects.link(obj)
+    tool.Ifc.link(storey, obj)
+
     return storey
 
 
@@ -2925,15 +3452,43 @@ def _adjust_interior_wall_endpoints(start_xy, end_xy, new_wall_thickness,
     if (e - s).length < 1e-6:
         return (s.x, s.y), (e.x, e.y)
 
+    # Force a depsgraph evaluation so freshly-created walls report their
+    # real mesh bbox + dimensions. Without this, walls placed earlier in
+    # the same script can still read as 0-sized when this clip runs.
+    bpy.context.view_layer.update()
+
+    def _ifc_wall_thickness(obj):
+        """Read the wall's true thickness from its IfcWallType's material
+        layer set — authoritative, independent of depsgraph state.
+        Falls back to obj.dimensions.y if the layer set is missing.
+        """
+        entity = tool.Ifc.get_entity(obj)
+        if entity is not None:
+            wt = None
+            for rel in getattr(entity, "IsTypedBy", []) or []:
+                wt = rel.RelatingType
+                break
+            if wt is not None:
+                try:
+                    params = tool.Model.get_material_layer_parameters(wt)
+                    if params and "thickness" in params:
+                        return float(params["thickness"])
+                except Exception:
+                    pass
+        return float(obj.dimensions.y)
+
     thick_walls = []
     for obj in bpy.data.objects:
-        if not obj.name.startswith("IfcWall/"):
+        # Filter by IFC class, NOT by Blender object name prefix. Bonsai
+        # walls get their "IfcWall/" name prefix applied asynchronously
+        # after creation — the IFC entity link is set immediately, but the
+        # Blender object name can still be "Ext_001" (no prefix) at the
+        # moment the next helper call runs. Using the entity class works
+        # regardless of naming state.
+        entity = tool.Ifc.get_entity(obj)
+        if entity is None or not entity.is_a("IfcWall"):
             continue
-        if tool.Ifc.get_entity(obj) is None:
-            continue
-        # Bonsai-built walls have local Y as the thickness axis, so
-        # obj.dimensions.y gives wall thickness regardless of world rotation.
-        thickness = float(obj.dimensions.y)
+        thickness = _ifc_wall_thickness(obj)
         if thickness <= new_wall_thickness + tolerance:
             continue
         corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
@@ -3020,6 +3575,9 @@ def _connect_interior_wall_to_touching_walls(new_wall_obj, new_wall_thickness,
     if new_entity is None:
         return []
 
+    # Force depsgraph eval so freshly-created walls report real dimensions.
+    bpy.context.view_layer.update()
+
     # Axis endpoints in world space — read from the wall's local frame.
     # Bonsai walls have their axis along local +X from (0,0,0) to
     # (length, 0, 0); local +Y is the thickness axis.
@@ -3030,12 +3588,12 @@ def _connect_interior_wall_to_touching_walls(new_wall_obj, new_wall_thickness,
     joiner = DumbWallJoiner()
     connected = []
     for other_obj in bpy.data.objects:
-        if not other_obj.name.startswith("IfcWall/"):
-            continue
         if other_obj is new_wall_obj:
             continue
+        # Filter by IFC class (see _adjust_interior_wall_endpoints note —
+        # the Blender "IfcWall/" name prefix is applied asynchronously).
         other_entity = tool.Ifc.get_entity(other_obj)
-        if other_entity is None:
+        if other_entity is None or not other_entity.is_a("IfcWall"):
             continue
         # Sibling-thickness filter — skip thicker walls (T-junctions into
         # exterior walls would trim those exterior walls; see docstring).
@@ -3090,7 +3648,7 @@ def add_interior_wall(start_xy, end_xy, height, base_z=0.0,
         base_z: world Z of the wall base (default 0; use the storey's
             elevation for upper-floor walls).
         wall_type_name: defaults to "WAL100" — the 100mm interior partition
-            type created by `bootstrap_project()`. Pass "WAL200" or another
+            type created by `setup_project()`. Pass "WAL200" or another
             name to use a different IfcWallType. Falls back to the first
             IfcWallType in the project if the named one is missing.
         name: optional Blender + IFC name.
@@ -3114,14 +3672,14 @@ def add_interior_wall(start_xy, end_xy, height, base_z=0.0,
         raise RuntimeError("No IFC project loaded.")
     wall_types = ifc.by_type("IfcWallType")
     if not wall_types:
-        raise RuntimeError("No IfcWallType in project. Run bootstrap_project() first.")
+        raise RuntimeError("No IfcWallType in project. Run setup_project() first.")
     if wall_type_name:
         wt = next((t for t in wall_types if t.Name == wall_type_name), None)
         # If the requested type is missing (e.g. caller passed "WAL100" on
-        # a project bootstrapped before the dual-type change), fall back
+        # a project set up before the dual-type change), fall back
         # silently to the first IfcWallType rather than raising. The
         # function-level default of "WAL100" SHOULD always be present on
-        # modern bootstrapped projects.
+        # modern projects.
         if wt is None:
             wt = wall_types[0]
     else:
@@ -3189,7 +3747,7 @@ def add_parametric_door_to_wall(
 
     Why this exists: `add_door_to_wall(wall, position, type_name)` requires
     a usable IfcDoorType in the project. The `create_parametric_door_type()`
-    helper that `bootstrap_project()` runs produces a degenerate
+    helper that `setup_project()` runs produces a degenerate
     IfcDoorType (0.1 m IfcPolygonalFaceSet) because `bim.add_door` doesn't
     properly build BBIM_Door geometry when run on a type rather than an
     occurrence. The result: every door using DT01 renders as a 0.1 m cube,
@@ -3280,7 +3838,7 @@ def add_parametric_door_to_wall(
     return obj, entity
 
 
-def bootstrap_project(
+def setup_project(
     project_name="My Project",
     site_name="My Site",
     building_name="My Building",
@@ -3305,7 +3863,7 @@ def bootstrap_project(
     wall_type_name=None,
     wall_thickness=None,
 ):
-    """One-shot project bootstrap — sets up everything the rest of the
+    """Set up a new IFC project — creates everything the rest of the
     skill expects to find in the project.
 
     What it creates:
@@ -3537,7 +4095,7 @@ def bootstrap_project(
         bl_mat.BIMStyleProperties.ifc_definition_id = style.id()
         bl_mat.BIMStyleProperties.name = name
 
-    # Parametric door type creation REMOVED from bootstrap.
+    # Parametric door type creation REMOVED from setup.
     # `create_parametric_door_type` runs `bim.add_door` against an
     # IfcDoorType, but BBIM_Door geometry is generated for OCCURRENCES,
     # not types — the resulting type ships as a 0.1 m IfcPolygonalFaceSet
@@ -3565,6 +4123,11 @@ def bootstrap_project(
         "styles": style_ids,
         "door_type": door_type.id() if door_type else None,
     }
+
+
+# Backwards-compat alias for the previous name. Prefer `setup_project()`
+# in new code.
+bootstrap_project = setup_project
 
 
 def add_wall_quantities(wall_entity=None):
@@ -3751,6 +4314,902 @@ def fill_opening_overall_attrs(entity=None):
             "OverallHeight": e.OverallHeight,
         })
     return results
+
+
+_DEFAULT_PALETTES = {
+    # Tuscan / Mediterranean warm tones — original default
+    "warm_terracotta": [
+        ("Render_Beige",    (0.83, 0.76, 0.61), 0.0, 0.90, 0.00),
+        ("Plaster_White",   (0.96, 0.96, 0.94), 0.0, 0.90, 0.00),
+        ("Floor_Oak",       (0.77, 0.65, 0.46), 0.0, 0.65, 0.00),
+        ("Roof_Terracotta", (0.63, 0.32, 0.18), 0.0, 0.75, 0.00),
+        ("Timber_Walnut",   (0.36, 0.25, 0.20), 0.0, 0.55, 0.00),
+        ("Concrete_Light",  (0.72, 0.72, 0.72), 0.0, 0.90, 0.00),
+    ],
+    # Modern Australian / Scandi — warm white render + dark charcoal roof
+    # + near-black steel rails + dark frames. Style names stay the same as
+    # the warm preset so existing element assignments don't have to change.
+    "modern_white_charcoal": [
+        ("Render_Beige",    (0.94, 0.93, 0.90), 0.0, 0.90, 0.00),
+        ("Plaster_White",   (0.94, 0.94, 0.93), 0.0, 0.90, 0.00),
+        ("Floor_Oak",       (0.55, 0.42, 0.30), 0.0, 0.65, 0.00),
+        ("Roof_Terracotta", (0.16, 0.16, 0.17), 0.0, 0.55, 0.00),
+        ("Timber_Walnut",   (0.10, 0.10, 0.10), 0.0, 0.45, 0.30),
+        ("Concrete_Light",  (0.80, 0.80, 0.78), 0.0, 0.80, 0.00),
+    ],
+}
+
+
+def apply_default_material_palette(switch_viewport=True,
+                                       preset="modern_white_charcoal"):
+    """Make the model look like a real building instead of uniform grey by
+    creating + assigning a 6-colour PBR-styled palette.
+
+    Each palette entry is a real `IfcSurfaceStyle` + linked Blender
+    material (Principled BSDF with Base Color / Roughness / Metallic
+    tuned per-finish) — viewport AND IFC-export friendly. The styles
+    are linked to Blender materials via `BIMStyleProperties.ifc_definition_id`
+    so they survive `bim.save_project` → close → re-open.
+
+    Default rules (IFC class + name pattern):
+        IfcWall  with "Ext" in name      → Render_Beige
+        IfcWall  with "Int" in name      → Plaster_White
+        IfcSlab                          → Floor_Oak
+        IfcRoof                          → Roof_Terracotta
+        IfcRailing                       → Timber_Walnut
+        IfcMember                        → Timber_Walnut (newel posts)
+        IfcStair                         → Concrete_Light
+
+    Door + window styles (Frame, Glass, Panel) set up by
+    `setup_project()` are left untouched.
+
+    Args:
+        switch_viewport: if True (default), also switches the active 3D
+            viewport's shading mode to MATERIAL so the result is visible
+            immediately. Set False if you want to keep the current
+            viewport shading.
+        preset: which colour preset to apply. Currently shipped:
+            - "modern_white_charcoal" (default) — warm-white render walls,
+              charcoal roof, near-black steel rails. Australian / Scandi.
+            - "warm_terracotta" — beige render walls, rust roof,
+              walnut rails. Tuscan / Mediterranean.
+            The style NAMES are the same across all presets so swapping
+            preset re-tints the same element assignments without needing
+            to re-apply.
+
+    Returns:
+        dict: {"preset": name, "styles": [names],
+               "applied": {style_name: count}}
+    """
+    import ifcopenshell.api.style
+
+    ifc = tool.Ifc.get()
+    if ifc is None:
+        raise RuntimeError("No IFC project loaded.")
+
+    if preset not in _DEFAULT_PALETTES:
+        raise ValueError(
+            f"Unknown preset '{preset}'. "
+            f"Available: {list(_DEFAULT_PALETTES.keys())}"
+        )
+    palette = _DEFAULT_PALETTES[preset]
+
+    styles = {}
+    for name, rgb, transparency, roughness, metallic in palette:
+        # Create-or-reuse the IfcSurfaceStyle
+        style = next((s for s in ifc.by_type("IfcSurfaceStyle")
+                      if s.Name == name), None)
+        if style is None:
+            style = ifcopenshell.api.style.add_style(ifc, name=name)
+            ifcopenshell.api.style.add_surface_style(
+                ifc, style=style,
+                ifc_class="IfcSurfaceStyleShading",
+                attributes={
+                    "SurfaceColour": {
+                        "Name": None,
+                        "Red":   float(rgb[0]),
+                        "Green": float(rgb[1]),
+                        "Blue":  float(rgb[2]),
+                    },
+                    "Transparency": float(transparency),
+                },
+            )
+
+        # Create-or-reuse the linked Blender material with PBR shading
+        bl_mat = bpy.data.materials.get(name)
+        if bl_mat is None:
+            bl_mat = bpy.data.materials.new(name)
+        bl_mat.use_nodes = True
+        nodes = bl_mat.node_tree.nodes
+        bsdf = nodes.get("Principled BSDF")
+        if bsdf is None:
+            for n in list(nodes):
+                nodes.remove(n)
+            bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+            output = nodes.new("ShaderNodeOutputMaterial")
+            bl_mat.node_tree.links.new(bsdf.outputs[0], output.inputs[0])
+        bsdf.inputs["Base Color"].default_value = (rgb[0], rgb[1], rgb[2], 1.0)
+        bsdf.inputs["Roughness"].default_value = roughness
+        bsdf.inputs["Metallic"].default_value = metallic
+        if "Alpha" in bsdf.inputs:
+            bsdf.inputs["Alpha"].default_value = 1.0 - transparency
+        if transparency > 0.0:
+            bl_mat.blend_method = 'BLEND'
+        bl_mat.diffuse_color = (rgb[0], rgb[1], rgb[2], 1.0 - transparency)
+        bl_mat.BIMStyleProperties.ifc_definition_id = style.id()
+        bl_mat.BIMStyleProperties.name = name
+
+        styles[name] = (style, bl_mat)
+
+    def _apply(element, style_name):
+        _, bl_mat = styles[style_name]
+        obj = tool.Ifc.get_object(element)
+        if obj is None or obj.data is None or not hasattr(obj.data, "materials"):
+            return False
+        if obj.data.materials:
+            obj.data.materials[0] = bl_mat
+        else:
+            obj.data.materials.append(bl_mat)
+        return True
+
+    applied = {}
+    def _bump(name): applied[name] = applied.get(name, 0) + 1
+
+    for w in ifc.by_type("IfcWall"):
+        name = w.Name or ""
+        target = "Render_Beige" if "Ext" in name else "Plaster_White"
+        if _apply(w, target):
+            _bump(target)
+    # Slabs default to wall material so the slab EDGE that sticks out at
+    # setbacks / balconies / overhangs reads as part of the building skin
+    # instead of a brown band. Floor_Oak stays in the palette for interior
+    # floor faces — assign it explicitly via obj.data.materials after this
+    # call when you have face-level material slots set up.
+    for s in ifc.by_type("IfcSlab"):
+        if _apply(s, "Render_Beige"): _bump("Render_Beige")
+    for r in ifc.by_type("IfcRoof"):
+        if _apply(r, "Roof_Terracotta"): _bump("Roof_Terracotta")
+    for rail in ifc.by_type("IfcRailing"):
+        if _apply(rail, "Timber_Walnut"): _bump("Timber_Walnut")
+    for mem in ifc.by_type("IfcMember"):
+        if _apply(mem, "Timber_Walnut"): _bump("Timber_Walnut")
+    for st in ifc.by_type("IfcStair"):
+        if _apply(st, "Concrete_Light"): _bump("Concrete_Light")
+
+    if switch_viewport:
+        for area in bpy.context.screen.areas:
+            if area.type == 'VIEW_3D':
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D':
+                        space.shading.type = 'MATERIAL'
+                        break
+
+    return {"preset": preset,
+            "styles": list(styles.keys()),
+            "applied": applied}
+
+
+def fill_opening_quantities(entity=None):
+    """Stamp `Qto_DoorBaseQuantities` / `Qto_WindowBaseQuantities` on every
+    IfcDoor / IfcWindow occurrence so downstream takeoff tools (Bonsai's
+    Search/CSV exporter, Solibri, BIMVision, our own schedule helper) can
+    read Width / Height / Area / Perimeter directly from a real IFC qto
+    pset.
+
+    Why this is its own helper: Bonsai does NOT auto-populate the IFC4
+    quantity sets for parametric openings — they ship with `OverallWidth`
+    + `OverallHeight` on the schema (via `fill_opening_overall_attrs`)
+    but no `Qto_*BaseQuantities`. Without those psets, takeoff queries
+    have to compute area on the fly, can't sort/group/sum by it, and
+    every IDS spec that asks for Width/Area/Perimeter quantities fails.
+
+    Source priority for Width + Height (same as
+    `fill_opening_overall_attrs`):
+      1. The element's `OverallWidth` / `OverallHeight` schema attrs
+      2. BBIM pset (`BBIM_Door.Data.overall_width`, etc.)
+      3. Geometry bbox of the occurrence
+
+    Computed:
+      Area      = Width × Height
+      Perimeter = 2 × (Width + Height)
+
+    Args:
+        entity: optional single IfcDoor / IfcWindow entity. If None,
+            processes every IfcDoor + IfcWindow in the project.
+
+    Returns:
+        dict: {"IfcDoor": count_stamped, "IfcWindow": count_stamped}
+    """
+    import json
+    import ifcopenshell.api.pset
+    import ifcopenshell.util.element as ue
+
+    ifc = tool.Ifc.get()
+    if ifc is None:
+        raise RuntimeError("No IFC project loaded.")
+
+    if entity is not None:
+        targets = [entity]
+    else:
+        targets = list(ifc.by_type("IfcDoor")) + list(ifc.by_type("IfcWindow"))
+
+    def _overall_dims(e):
+        w = e.OverallWidth
+        h = e.OverallHeight
+        if w is None or h is None:
+            psets = ue.get_psets(e)
+            bbim_key = "BBIM_Window" if e.is_a("IfcWindow") else "BBIM_Door"
+            raw = psets.get(bbim_key, {}).get("Data")
+            if raw:
+                try:
+                    data = json.loads(raw)
+                    if w is None: w = data.get("overall_width")
+                    if h is None: h = data.get("overall_height")
+                except Exception:
+                    pass
+        if w is None or h is None:
+            obj = tool.Ifc.get_object(e)
+            if obj is not None and obj.data and obj.data.vertices:
+                vs = [obj.matrix_world @ v.co for v in obj.data.vertices]
+                dx = max(v.x for v in vs) - min(v.x for v in vs)
+                dy = max(v.y for v in vs) - min(v.y for v in vs)
+                dz = max(v.z for v in vs) - min(v.z for v in vs)
+                if w is None: w = max(dx, dy)
+                if h is None: h = dz
+        return (float(w) if w is not None else None,
+                float(h) if h is not None else None)
+
+    stamped = {"IfcDoor": 0, "IfcWindow": 0}
+    for e in targets:
+        if not e.is_a("IfcDoor") and not e.is_a("IfcWindow"):
+            continue
+        w, h = _overall_dims(e)
+        if w is None or h is None:
+            continue
+        qto_name = ("Qto_DoorBaseQuantities" if e.is_a("IfcDoor")
+                    else "Qto_WindowBaseQuantities")
+        qto = ifcopenshell.api.pset.add_qto(ifc, product=e, name=qto_name)
+        ifcopenshell.api.pset.edit_qto(ifc, qto=qto, properties={
+            "Width":     round(w, 4),
+            "Height":    round(h, 4),
+            "Area":      round(w * h, 4),
+            "Perimeter": round(2 * (w + h), 4),
+        })
+        stamped[e.is_a()] += 1
+    return stamped
+
+
+def align_filling_containers_to_host_walls():
+    """Reassign every IfcDoor / IfcWindow's `ContainedInStructure` to match
+    its host wall's storey.
+
+    Why this exists: Bonsai's `bim.add_door` / `bim.add_window` operators
+    assign the new filling to the CURRENT default spatial container at
+    creation time — which is whatever was active in the Spatial
+    Decomposition panel, NOT necessarily the storey of the host wall.
+    On a multi-storey build where you keep adding to the same default,
+    every L2 door ends up tagged "Ground Floor" even though its host
+    wall is on L2.
+
+    Symptoms when this happens:
+      - The schedule lists every opening on Ground Floor regardless of
+        which floor the wall is on.
+      - Solibri / IFC.js / Revit import treats L2 openings as L1
+        artefacts, breaking model-wide takeoff and clash workflows.
+
+    Fix: for each filling, walk `FillsVoids → opening.VoidsElements →
+    host wall`, read the host's `ContainedInStructure`, and if the
+    filling is in a different storey, reassign it via
+    `spatial.assign_container`.
+
+    Returns:
+        list[(filling_name, from_storey, to_storey)] — one entry per
+        reassignment. Empty list means nothing needed fixing.
+    """
+    import ifcopenshell.api
+    ifc = tool.Ifc.get()
+    if ifc is None:
+        raise RuntimeError("No IFC project loaded.")
+
+    def _host_wall(filling):
+        for rel in (getattr(filling, "FillsVoids", None) or []):
+            opening = rel.RelatingOpeningElement
+            for v in (getattr(opening, "VoidsElements", None) or []):
+                if v.RelatingBuildingElement is not None:
+                    return v.RelatingBuildingElement
+        return None
+
+    def _direct_storey(e):
+        for rel in (getattr(e, "ContainedInStructure", None) or []):
+            s = rel.RelatingStructure
+            if s is not None and s.is_a("IfcBuildingStorey"):
+                return s
+        return None
+
+    reassigned = []
+    for cls in ("IfcDoor", "IfcWindow"):
+        for f in ifc.by_type(cls):
+            host = _host_wall(f)
+            if host is None:
+                continue
+            host_st = _direct_storey(host)
+            if host_st is None:
+                continue
+            cur_st = _direct_storey(f)
+            if cur_st is host_st:
+                continue
+            ifcopenshell.api.run("spatial.assign_container", ifc,
+                                  products=[f], relating_structure=host_st)
+            reassigned.append((
+                f.Name or "",
+                cur_st.Name if cur_st else None,
+                host_st.Name,
+            ))
+    return reassigned
+
+
+def export_opening_schedule(output_path, fmt="html", title=None):
+    """Export a Revit-style door + window schedule (type-grouped) to HTML
+    or CSV.
+
+    The schedule groups openings by unique (Width × Height) — each
+    distinct combination becomes a "type" with a mark (D1/D2/... for
+    doors, W1/W2/... for windows), and the table shows per-storey
+    counts plus totals.
+
+    Reads from each element's `Qto_(Door|Window)BaseQuantities` if
+    present (call `fill_opening_quantities()` first), with fallback to
+    `OverallWidth` / `OverallHeight`. Call
+    `align_filling_containers_to_host_walls()` beforehand to make sure
+    each opening reports the right storey.
+
+    Args:
+        output_path: target file path. Extension hint matches `fmt`.
+        fmt: "html" (default, Revit-style with type schedules + instance
+            lists, ready to print) or "csv" (two stacked tables — DOOR
+            SCHEDULE then WINDOW SCHEDULE).
+        title: optional <h1> / first-row title for the document.
+
+    Returns:
+        dict: {"path": output_path, "door_types": N, "window_types": M,
+                "doors_total": X, "windows_total": Y}
+    """
+    import csv as _csv
+    import html as _html
+    from collections import defaultdict
+    import ifcopenshell.util.element as ue
+
+    ifc = tool.Ifc.get()
+    if ifc is None:
+        raise RuntimeError("No IFC project loaded.")
+    if title is None:
+        proj = ifc.by_type("IfcProject")
+        title = (proj[0].Name if proj else "Opening Schedule") + " — Door + Window Schedule"
+
+    def _host_wall(f):
+        for rel in (getattr(f, "FillsVoids", None) or []):
+            for v in (getattr(rel.RelatingOpeningElement,
+                              "VoidsElements", None) or []):
+                if v.RelatingBuildingElement: return v.RelatingBuildingElement
+        return None
+
+    def _storey_of(e):
+        for rel in (getattr(e, "ContainedInStructure", None) or []):
+            if rel.RelatingStructure.is_a("IfcBuildingStorey"):
+                return rel.RelatingStructure
+        if e.is_a() in ("IfcDoor", "IfcWindow"):
+            h = _host_wall(e)
+            if h: return _storey_of(h)
+        return None
+
+    def _collect(cls, qto_name):
+        items = []
+        for f in ifc.by_type(cls):
+            psets = ue.get_psets(f)
+            q = psets.get(qto_name, {})
+            w = float(q.get("Width",  f.OverallWidth  or 0) or 0)
+            h = float(q.get("Height", f.OverallHeight or 0) or 0)
+            host = _host_wall(f); st = _storey_of(f)
+            items.append({
+                "name": f.Name or "", "width": round(w, 3),
+                "height": round(h, 3), "area": round(w * h, 3),
+                "host": host.Name if host else "",
+                "storey": st.Name if st else "",
+                "guid": f.GlobalId,
+            })
+        return items
+
+    def _build_types(items, prefix):
+        groups = defaultdict(list)
+        for it in items: groups[(it["width"], it["height"])].append(it)
+        keys = sorted(groups.keys(), key=lambda k: (-k[0] * k[1], -k[0], -k[1]))
+        out = []
+        for i, key in enumerate(keys, start=1):
+            insts = groups[key]
+            by_storey = defaultdict(int)
+            for inst in insts: by_storey[inst["storey"]] += 1
+            out.append({"mark": f"{prefix}{i}", "width": key[0],
+                         "height": key[1], "area": round(key[0] * key[1], 3),
+                         "count": len(insts), "by_storey": dict(by_storey),
+                         "instances": insts})
+        return out
+
+    doors  = _collect("IfcDoor",   "Qto_DoorBaseQuantities")
+    windws = _collect("IfcWindow", "Qto_WindowBaseQuantities")
+    door_types = _build_types(doors,  "D")
+    win_types  = _build_types(windws, "W")
+
+    fmt = fmt.lower()
+    if fmt == "csv":
+        all_storeys = sorted({s for t in door_types + win_types
+                              for s in t["by_storey"].keys()})
+        with open(output_path, "w", newline="", encoding="utf-8-sig") as fh:
+            w = _csv.writer(fh)
+            for label, types in [("DOOR SCHEDULE",   door_types),
+                                  ("WINDOW SCHEDULE", win_types)]:
+                w.writerow([label])
+                w.writerow(["Type Mark", "Width (m)", "Height (m)",
+                            "Area (m²)"] + all_storeys +
+                            ["Total Count", "Total Area (m²)"])
+                for t in types:
+                    w.writerow([t["mark"], t["width"], t["height"], t["area"]] +
+                                [t["by_storey"].get(s, "") for s in all_storeys] +
+                                [t["count"], round(t["area"] * t["count"], 3)])
+                w.writerow([])
+    else:
+        # HTML
+        def _cell(x):
+            if isinstance(x, float): return f"{x:.3f}"
+            return _html.escape(str(x))
+
+        def _render_type_table(title, types):
+            storeys = sorted({s for t in types for s in t["by_storey"].keys()})
+            storey_cols = "".join(f"<th>{_html.escape(s)}</th>" for s in storeys)
+            rows = ""; tot_n = 0; tot_a = 0
+            for t in types:
+                per = "".join(f"<td class='num'>{t['by_storey'].get(s, '')}</td>"
+                              for s in storeys)
+                row_a = round(t["area"] * t["count"], 3)
+                rows += (f"<tr><td class='mark'>{t['mark']}</td>"
+                         f"<td class='num'>{_cell(t['width'])}</td>"
+                         f"<td class='num'>{_cell(t['height'])}</td>"
+                         f"<td class='num'>{_cell(t['area'])}</td>"
+                         f"{per}<td class='num bold'>{t['count']}</td>"
+                         f"<td class='num bold'>{_cell(row_a)}</td></tr>")
+                tot_n += t["count"]; tot_a += row_a
+            return (f"<h2>{_html.escape(title)}</h2><table><thead><tr>"
+                    f"<th>Type Mark</th><th>Width (m)</th><th>Height (m)</th>"
+                    f"<th>Area (m²)</th>{storey_cols}<th>Total Count</th>"
+                    f"<th>Total Area (m²)</th></tr></thead>"
+                    f"<tbody>{rows}</tbody><tfoot><tr>"
+                    f"<td colspan='{4 + len(storeys)}' class='right'>Totals</td>"
+                    f"<td class='num bold'>{tot_n}</td>"
+                    f"<td class='num bold'>{_cell(round(tot_a, 3))}</td>"
+                    f"</tr></tfoot></table>")
+
+        def _render_instance_list(title, types):
+            rows = ""
+            for t in types:
+                for inst in t["instances"]:
+                    rows += (f"<tr><td class='mark'>{t['mark']}</td>"
+                             f"<td>{_html.escape(inst['name'])}</td>"
+                             f"<td>{_html.escape(inst['storey'])}</td>"
+                             f"<td>{_html.escape(inst['host'])}</td>"
+                             f"<td class='num'>{_cell(inst['width'])}</td>"
+                             f"<td class='num'>{_cell(inst['height'])}</td>"
+                             f"<td class='guid'>{_html.escape(inst['guid'])}</td></tr>")
+            return (f"<h2>{_html.escape(title)}</h2><table><thead><tr>"
+                    f"<th>Type</th><th>Name</th><th>Storey</th><th>Host Wall</th>"
+                    f"<th>Width (m)</th><th>Height (m)</th><th>GlobalId</th>"
+                    f"</tr></thead><tbody>{rows}</tbody></table>")
+
+        css = ("body{font-family:'Segoe UI',system-ui,sans-serif;margin:2em;color:#222}"
+               "h1{border-bottom:2px solid #444;padding-bottom:.2em}"
+               "h2{margin-top:2.5em;color:#1a4a7f}"
+               "table{border-collapse:collapse;width:100%;margin-top:.5em;"
+               "font-size:13px;box-shadow:0 1px 3px rgba(0,0,0,.08)}"
+               "th,td{border:1px solid #c8c8c8;padding:6px 10px;text-align:left}"
+               "th{background:#1a4a7f;color:#fff;font-weight:600}"
+               "tbody tr:nth-child(even){background:#f5f7fa}"
+               "tfoot td{background:#e6ecf2;font-weight:600;border-top:2px solid #1a4a7f}"
+               ".num{text-align:right;font-variant-numeric:tabular-nums}"
+               ".bold{font-weight:700}.mark{font-weight:700;color:#1a4a7f}"
+               ".right{text-align:right}"
+               ".guid{font-family:Consolas,monospace;font-size:11px;color:#666}")
+        doc = (f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+               f"<title>{_html.escape(title)}</title><style>{css}</style></head>"
+               f"<body><h1>{_html.escape(title)}</h1>"
+               f"{_render_type_table('Door Schedule', door_types)}"
+               f"{_render_type_table('Window Schedule', win_types)}"
+               f"{_render_instance_list('Door Instances', door_types)}"
+               f"{_render_instance_list('Window Instances', win_types)}"
+               f"</body></html>")
+        with open(output_path, "w", encoding="utf-8") as fh:
+            fh.write(doc)
+
+    return {
+        "path": output_path,
+        "door_types": len(door_types),
+        "window_types": len(win_types),
+        "doors_total": sum(t["count"] for t in door_types),
+        "windows_total": sum(t["count"] for t in win_types),
+    }
+
+
+def _resolve_4d_element_selector(selector):
+    """Resolve a task's element selector into a list of IFC entities.
+
+    `selector` can be:
+        - a callable `lambda entity: bool` — walks every IfcElement class
+        - a dict like `{"class": "IfcWall", "name_startswith": "Ext_"}` with
+          optional `name_equals`, `name_startswith`, `name_not_startswith`,
+          `name_contains` filters
+        - a list of IfcEntity directly
+    """
+    ifc = tool.Ifc.get()
+    CLASSES = ("IfcSlab", "IfcWall", "IfcDoor", "IfcWindow",
+               "IfcStair", "IfcRoof", "IfcRailing", "IfcMember",
+               "IfcSpace", "IfcCovering")
+
+    if callable(selector):
+        out = []
+        for cls in CLASSES:
+            for e in ifc.by_type(cls):
+                if selector(e):
+                    out.append(e)
+        return out
+    if isinstance(selector, dict):
+        cls = selector.get("class")
+        if cls is None:
+            return []
+        out = []
+        for e in ifc.by_type(cls):
+            name = e.Name or ""
+            if "name_equals" in selector and name != selector["name_equals"]:
+                continue
+            if "name_startswith" in selector and not name.startswith(selector["name_startswith"]):
+                continue
+            if "name_not_startswith" in selector and name.startswith(selector["name_not_startswith"]):
+                continue
+            if "name_contains" in selector and selector["name_contains"] not in name:
+                continue
+            out.append(e)
+        return out
+    if isinstance(selector, list):
+        return selector
+    return []
+
+
+def default_residential_construction_tasks():
+    """Return the standard task list for a 2-storey residential build that
+    matches the naming conventions produced by this skill's helpers (Ext_*,
+    Int_*, L2_Ext_*, L2_Int_*, MainEntry, Slab, UpperFloor, etc.).
+
+    Pass the result to `add_construction_schedule()` to apply, optionally
+    after tweaking start_day / duration_days for your real timeline.
+
+    Returns:
+        list[dict]: 11 task specs, total duration ~68 days (~14 weeks).
+    """
+    return [
+        {"id": "T01", "name": "Foundation slab",       "start_day":  0, "duration_days":  5,
+         "elements": {"class": "IfcSlab", "name_equals": "Slab"}},
+        {"id": "T02", "name": "L1 exterior walls",     "start_day":  5, "duration_days": 10,
+         "elements": {"class": "IfcWall", "name_startswith": "Ext_"}},
+        {"id": "T03", "name": "L1 partitions",         "start_day": 15, "duration_days":  5,
+         "elements": {"class": "IfcWall", "name_startswith": "Int_"}},
+        {"id": "T04", "name": "L1 doors + windows",    "start_day": 20, "duration_days":  5,
+         "elements": lambda e: (e.is_a("IfcDoor") or e.is_a("IfcWindow"))
+                                and (e.Name or "") and not (e.Name or "").startswith("L2_")},
+        {"id": "T05", "name": "Upper slab",            "start_day": 25, "duration_days":  5,
+         "elements": {"class": "IfcSlab", "name_equals": "UpperFloor"}},
+        {"id": "T06", "name": "Stair",                 "start_day": 30, "duration_days":  3,
+         "elements": {"class": "IfcStair"}},
+        {"id": "T07", "name": "L2 exterior walls",     "start_day": 33, "duration_days": 10,
+         "elements": {"class": "IfcWall", "name_startswith": "L2_Ext_"}},
+        {"id": "T08", "name": "L2 partitions",         "start_day": 43, "duration_days":  5,
+         "elements": {"class": "IfcWall", "name_startswith": "L2_Int_"}},
+        {"id": "T09", "name": "L2 doors + windows",    "start_day": 48, "duration_days":  5,
+         "elements": lambda e: (e.is_a("IfcDoor") or e.is_a("IfcWindow"))
+                                and (e.Name or "").startswith("L2_")},
+        {"id": "T10", "name": "Hip roof",              "start_day": 53, "duration_days": 10,
+         "elements": {"class": "IfcRoof"}},
+        {"id": "T11", "name": "Railings + newel",      "start_day": 63, "duration_days":  5,
+         "elements": lambda e: e.is_a("IfcRailing") or e.is_a("IfcMember")},
+    ]
+
+
+def add_construction_schedule(
+    task_specs=None,
+    project_start_date="2026-06-08",
+    schedule_name="Construction Sequence",
+    setup_animation=True,
+    frames_per_day=5,
+    fps=24,
+):
+    """Build an `IfcWorkSchedule` + `IfcTask`s + `IfcRelAssignsToProcess`
+    element assignments (the IFC4 4D model), and OPTIONALLY keyframe
+    `hide_render` / `hide_viewport` on every assigned element so Blender's
+    playhead plays back the construction sequence.
+
+    BIM-CORRECT: produces a real `IfcWorkSchedule`, real `IfcTask`s with
+    `IfcTaskTime` carrying `ScheduleStart` / `ScheduleFinish` / duration,
+    and real `IfcRelAssignsToProcess` linking each element to its build
+    task. Survives IFC export and is readable by any 4D-capable IFC
+    viewer (Solibri, BIMVision, IFC.js with sequence support).
+
+    Idempotent: if a schedule with the same `schedule_name` exists, it
+    is removed first.
+
+    Args:
+        task_specs: list of dicts, one per task. Each dict needs:
+            - "id": task identification string (e.g., "T01")
+            - "name": human-readable task name
+            - "start_day": offset in days from project_start_date
+            - "duration_days": working days the task takes
+            - "elements": selector for the IFC elements this task builds.
+              Either a callable `lambda entity: bool`, a dict
+              `{"class": "IfcWall", "name_startswith": "Ext_"}`, or a
+              list of IfcEntity directly.
+          If None (default), `default_residential_construction_tasks()`
+          is used.
+        project_start_date: ISO date string ("YYYY-MM-DD") or
+            `datetime.date`. Day 0 of every task is measured from here.
+        schedule_name: name of the IfcWorkSchedule.
+        setup_animation: if True (default), also keyframe element
+            visibility so the build sequence plays back when scrubbing
+            Blender's playhead. Each element's `hide_render` and
+            `hide_viewport` are keyframed: True at frame 1, True until
+            (start_day - 1), False from `start_day * frames_per_day`.
+        frames_per_day: scaling factor for the animation. Higher = slower
+            playback (more frames per day of construction). Default 5.
+        fps: Blender scene fps to set. Default 24.
+
+    Returns:
+        dict with:
+            "schedule": schedule.Name
+            "schedule_id": IFC ID of the IfcWorkSchedule
+            "tasks": list of task info dicts (id, name, start_day,
+                duration_days, elements_count, element_names)
+            "animation": None if setup_animation=False, otherwise dict
+                with elements_keyframed, frame_start, frame_end, fps,
+                duration_seconds.
+    """
+    import datetime
+    import ifcopenshell.api.sequence
+
+    ifc = tool.Ifc.get()
+    if ifc is None:
+        raise RuntimeError("No IFC project loaded.")
+
+    if task_specs is None:
+        task_specs = default_residential_construction_tasks()
+
+    if isinstance(project_start_date, str):
+        project_start_date = datetime.date.fromisoformat(project_start_date)
+
+    # Idempotent: drop the old schedule of the same name if present
+    existing = next((ws for ws in ifc.by_type("IfcWorkSchedule")
+                     if ws.Name == schedule_name), None)
+    if existing is not None:
+        ifcopenshell.api.run("sequence.remove_work_schedule", ifc,
+                              work_schedule=existing)
+
+    schedule = ifcopenshell.api.run(
+        "sequence.add_work_schedule", ifc,
+        name=schedule_name, predefined_type="PLANNED",
+    )
+
+    tasks_info = []
+    for spec in task_specs:
+        task = ifcopenshell.api.run(
+            "sequence.add_task", ifc,
+            work_schedule=schedule,
+            name=spec["name"],
+            identification=spec["id"],
+            predefined_type="CONSTRUCTION",
+        )
+        tt = ifcopenshell.api.run("sequence.add_task_time", ifc, task=task)
+        start = project_start_date + datetime.timedelta(days=spec["start_day"])
+        finish = project_start_date + datetime.timedelta(
+            days=spec["start_day"] + spec["duration_days"] - 1
+        )
+        ifcopenshell.api.run(
+            "sequence.edit_task_time", ifc, task_time=tt,
+            attributes={
+                "ScheduleStart":    start.isoformat() + "T00:00:00",
+                "ScheduleFinish":   finish.isoformat() + "T17:00:00",
+                "ScheduleDuration": f"P{spec['duration_days']}D",
+                "DurationType":     "WORKTIME",
+            },
+        )
+        elements = _resolve_4d_element_selector(spec["elements"])
+        for e in elements:
+            ifcopenshell.api.run(
+                "sequence.assign_process", ifc,
+                relating_process=task, related_object=e,
+            )
+        tasks_info.append({
+            "id": spec["id"], "name": spec["name"],
+            "start_day": spec["start_day"],
+            "duration_days": spec["duration_days"],
+            "elements_count": len(elements),
+            "element_names": [e.Name for e in elements if e.Name],
+        })
+
+    animation_info = None
+    if setup_animation:
+        animation_info = _setup_4d_animation_keyframes(
+            task_specs, frames_per_day, fps,
+        )
+
+    return {
+        "schedule":     schedule.Name,
+        "schedule_id":  schedule.id(),
+        "tasks":        tasks_info,
+        "animation":    animation_info,
+    }
+
+
+def _setup_4d_animation_keyframes(task_specs, frames_per_day=5, fps=24):
+    """Keyframe `hide_render` / `hide_viewport` on every assigned element so
+    Blender's playhead plays back the construction sequence.
+
+    Internal helper called by `add_construction_schedule(setup_animation=True)`.
+    Can also be called directly when you want to re-build the animation
+    keyframes without touching the IFC schedule (e.g., after re-creating
+    elements that were lost).
+
+    Args:
+        task_specs: same format as `add_construction_schedule`.
+        frames_per_day: keyframe scaling — more = slower playback.
+        fps: Blender scene fps.
+
+    Returns:
+        dict: animation summary.
+    """
+    appear_at = {}
+    for spec in task_specs:
+        appear_frame = max(2, spec["start_day"] * frames_per_day)
+        for e in _resolve_4d_element_selector(spec["elements"]):
+            obj = tool.Ifc.get_object(e)
+            if obj is not None:
+                appear_at[obj.name] = appear_frame
+
+    for name, frame in appear_at.items():
+        obj = bpy.data.objects.get(name)
+        if obj is None:
+            continue
+        obj.animation_data_clear()
+        obj.hide_render = True
+        obj.hide_viewport = True
+        obj.keyframe_insert(data_path="hide_render", frame=1)
+        obj.keyframe_insert(data_path="hide_viewport", frame=1)
+        if frame > 2:
+            obj.keyframe_insert(data_path="hide_render", frame=frame - 1)
+            obj.keyframe_insert(data_path="hide_viewport", frame=frame - 1)
+        obj.hide_render = False
+        obj.hide_viewport = False
+        obj.keyframe_insert(data_path="hide_render", frame=frame)
+        obj.keyframe_insert(data_path="hide_viewport", frame=frame)
+
+    scene = bpy.context.scene
+    if appear_at:
+        last_appear = max(appear_at.values())
+        scene.frame_start = 1
+        scene.frame_end = last_appear + frames_per_day * 5
+        scene.render.fps = fps
+        scene.frame_set(1)
+
+    return {
+        "elements_keyframed": len(appear_at),
+        "frame_start": scene.frame_start,
+        "frame_end": scene.frame_end,
+        "fps": fps,
+        "duration_seconds": round((scene.frame_end - scene.frame_start) / fps, 2),
+    }
+
+
+def render_4d_milestones(
+    output_dir,
+    task_specs=None,
+    project_start_date="2026-06-08",
+    frames_per_day=5,
+    resolution=(1280, 720),
+    make_gif=True,
+    gif_duration_ms=1200,
+):
+    """Render one PNG per task milestone (end of each task) so you have a
+    static "stages" deck of the construction sequence. Optionally compose
+    them into an animated GIF (requires Pillow, which ships with Blender).
+
+    Use this after calling `add_construction_schedule(setup_animation=True)`
+    so the timeline keyframes are in place — this helper just steps the
+    playhead and renders.
+
+    Args:
+        output_dir: folder for the per-step PNGs (created if missing).
+            The GIF is written alongside as `4d_animation.gif`.
+        task_specs: same format as `add_construction_schedule`. None →
+            uses `default_residential_construction_tasks()`.
+        project_start_date: only used for caption text in the GIF.
+        frames_per_day: must match what was used in
+            `add_construction_schedule` so frames line up with tasks.
+        resolution: (width, height) of each PNG.
+        make_gif: if True, compose all PNGs into an animated GIF using
+            Pillow with captions on each frame.
+        gif_duration_ms: ms per frame in the GIF (1200 = 1.2 s/frame).
+
+    Returns:
+        dict: {"frames_dir", "frame_count", "gif_path" or None}
+    """
+    import os
+
+    ifc = tool.Ifc.get()
+    if ifc is None:
+        raise RuntimeError("No IFC project loaded.")
+
+    if task_specs is None:
+        task_specs = default_residential_construction_tasks()
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    scene = bpy.context.scene
+    scene.render.resolution_x = resolution[0]
+    scene.render.resolution_y = resolution[1]
+    scene.render.resolution_percentage = 100
+    scene.render.image_settings.file_format = 'PNG'
+
+    rendered = []
+    for i, spec in enumerate(task_specs):
+        f = max(2, (spec["start_day"] + spec["duration_days"] - 1) * frames_per_day)
+        scene.frame_set(f)
+        safe_name = spec["name"].replace(" + ", "_").replace(" ", "_")
+        fp = os.path.join(output_dir, f"step_{i+1:02d}_{safe_name}.png")
+        scene.render.filepath = fp
+        bpy.ops.render.render(write_still=True)
+        rendered.append((spec["name"], fp))
+
+    gif_path = None
+    if make_gif:
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except ImportError:
+            return {"frames_dir": output_dir,
+                    "frame_count": len(rendered),
+                    "gif_path": None,
+                    "note": "Pillow not installed; GIF skipped"}
+        try:
+            font = ImageFont.truetype("arial.ttf", 32)
+        except Exception:
+            font = ImageFont.load_default()
+
+        frames = []
+        for (label, path), spec in zip(rendered, task_specs):
+            img = Image.open(path).convert("RGB")
+            banner_h = 70
+            banner = Image.new("RGBA", (img.width, banner_h), (0, 0, 0, 200))
+            img.paste(banner, (0, img.height - banner_h), banner)
+            draw = ImageDraw.Draw(img)
+            day_start = spec["start_day"]
+            day_end   = spec["start_day"] + spec["duration_days"]
+            txt = f"Day {day_start}-{day_end}: {label}"
+            draw.text((25, img.height - banner_h + 18), txt,
+                       fill=(255, 255, 255), font=font)
+            img.thumbnail((1024, 576))
+            frames.append(img.convert("P", palette=Image.ADAPTIVE, colors=128))
+
+        gif_path = os.path.join(output_dir, "4d_animation.gif")
+        frames[0].save(
+            gif_path, save_all=True, append_images=frames[1:],
+            duration=gif_duration_ms, loop=0, optimize=True,
+        )
+
+    return {
+        "frames_dir":  output_dir,
+        "frame_count": len(rendered),
+        "gif_path":    gif_path,
+    }
 
 
 def author_room_ids(
@@ -3972,6 +5431,278 @@ def activate_bcf_viewpoint_safely(
             rehidden.append(name)
 
     return {"viewpoint_guid": viewpoint_guid, "rehidden_helpers": rehidden}
+
+
+# ---------------------------------------------------------------------------
+# Programmatic geometry audit — call after every build before declaring done
+# ---------------------------------------------------------------------------
+def audit_geometry(tolerance=1e-3, void_alignment_tolerance=0.005):
+    """Programmatic geometry checks for the kinds of build defects that
+    don't show up in element counts or individual element dimensions —
+    only in PAIRWISE checks between elements.
+
+    Run this AFTER every wall/slab/stair build step, BEFORE telling the
+    user the task is done. Each defect this catches was previously
+    discovered by the user pointing it out:
+
+    1. **Wall-wall body intersection with different thicknesses**
+       (interior partition pokes 200 mm through an exterior wall — the
+       knife-through-wall pattern that breaks IFC element separation).
+       Same-thickness walls can legitimately share corners, so the check
+       only flags pairs whose thickness DIFFERS.
+
+    2. **Stair penetrating a slab with no IfcOpeningElement** — the stair
+       body is INSIDE the slab body at z=[slab_z_min, slab_z_max] but no
+       `IfcRelVoidsElement` exists. The stair will appear to poke through
+       a solid floor in every IFC viewer.
+
+    3. **Stair void mis-aligned with the last tread back edge** in the
+       stair's run direction — visible gap between the stair's last
+       tread and where the L2 slab body resumes. Reproduces the
+       `add_stairwell_opening_for_stair` bug pre-direction-aware.
+
+    Args:
+        tolerance: metres; bbox overlap below this is treated as floating
+            point noise, not a real intersection.
+        void_alignment_tolerance: metres; if the void edge is within this
+            distance of the last-tread back position in the run direction,
+            it's accepted as flush.
+
+    Returns:
+        {"ok": bool, "issues": [str], "details": [dict]}
+        Each `details` entry has `type` plus type-specific fields so
+        callers can take programmatic action (e.g. re-cut a void).
+    """
+    import math
+    import bpy
+    from mathutils import Vector
+
+    bpy.context.view_layer.update()
+    ifc = tool.Ifc.get()
+    if ifc is None:
+        return {"ok": False, "issues": ["No IFC project loaded"], "details": []}
+
+    issues = []
+    details = []
+
+    def _world_xy_bbox(obj):
+        if obj is None or not obj.data or not obj.data.vertices:
+            return None
+        deps = bpy.context.evaluated_depsgraph_get()
+        me = obj.evaluated_get(deps).to_mesh()
+        verts = [obj.matrix_world @ v.co for v in me.vertices]
+        obj.evaluated_get(deps).to_mesh_clear()
+        return (
+            min(v.x for v in verts), max(v.x for v in verts),
+            min(v.y for v in verts), max(v.y for v in verts),
+            min(v.z for v in verts), max(v.z for v in verts),
+        )
+
+    def _ifc_layer_thickness(element):
+        for rel in (getattr(element, "IsTypedBy", []) or []):
+            wt = rel.RelatingType
+            try:
+                params = tool.Model.get_material_layer_parameters(wt)
+                if params and "thickness" in params:
+                    return float(params["thickness"])
+            except Exception:
+                pass
+        return None
+
+    # --- 1. Wall-wall body intersection with different thickness ---
+    walls_info = []
+    for w in ifc.by_type("IfcWall"):
+        obj = tool.Ifc.get_object(w)
+        bbox = _world_xy_bbox(obj)
+        if bbox is None:
+            continue
+        thickness = _ifc_layer_thickness(w) or float(obj.dimensions.y)
+        walls_info.append({"name": w.Name, "thickness": thickness, "bbox": bbox})
+
+    for i, a in enumerate(walls_info):
+        for b in walls_info[i + 1:]:
+            if abs(a["thickness"] - b["thickness"]) <= tolerance:
+                continue  # same-thickness walls can legitimately share corners
+            ax0, ax1, ay0, ay1, az0, az1 = a["bbox"]
+            bx0, bx1, by0, by1, bz0, bz1 = b["bbox"]
+            dx = min(ax1, bx1) - max(ax0, bx0)
+            dy = min(ay1, by1) - max(ay0, by0)
+            dz = min(az1, bz1) - max(az0, bz0)
+            # Require overlap on ALL THREE axes — walls on different
+            # storeys can share XY (L2 perimeter sitting above L1) without
+            # being a real intersection.
+            if dx > tolerance and dy > tolerance and dz > tolerance:
+                issues.append(
+                    f"Wall body intersection: '{a['name']}' "
+                    f"(t={a['thickness']*1000:.0f}mm) overlaps "
+                    f"'{b['name']}' (t={b['thickness']*1000:.0f}mm) by "
+                    f"{dx*1000:.0f}x{dy*1000:.0f}x{dz*1000:.0f}mm"
+                )
+                details.append({
+                    "type": "wall_intersection",
+                    "wall_a": a["name"], "wall_b": b["name"],
+                    "overlap_mm": (round(dx * 1000, 1),
+                                   round(dy * 1000, 1),
+                                   round(dz * 1000, 1)),
+                })
+
+    # --- 2. Door / window filling crosses an interior wall on its host ---
+    # Catches: window placed at the x-position where an interior partition
+    # T-junctions with the exterior wall → the partition sits right behind
+    # the glass and BLOCKS THE VIEW from inside (or splits the opening
+    # between two rooms). The partition body and the window body don't
+    # need to overlap in 3D — the issue is purely the x-position on the
+    # host wall. add_equally_spaced_windows_to_wall's auto-obstacle path
+    # prevents this at build time; this audit catches anything placed by
+    # hand with `add_parametric_window_to_wall(target=...)` at a bad x.
+    fillings = list(ifc.by_type("IfcDoor")) + list(ifc.by_type("IfcWindow"))
+    obstacles_by_host = {}
+    for f in fillings:
+        f_obj = tool.Ifc.get_object(f)
+        if f_obj is None or not f_obj.data or not f_obj.data.vertices:
+            continue
+        host = None
+        for rel_fills in (getattr(f, "FillsVoids", None) or []):
+            opening = rel_fills.RelatingOpeningElement
+            for rel_voids in (getattr(opening, "VoidsElements", None) or []):
+                host = rel_voids.RelatingBuildingElement
+                if host is not None:
+                    break
+            if host is not None:
+                break
+        if host is None:
+            continue
+        host_obj = tool.Ifc.get_object(host)
+        if host_obj is None:
+            continue
+        # Local-X range of filling on host wall
+        M_inv = host_obj.matrix_world.inverted()
+        f_corners = [f_obj.matrix_world @ Vector(c) for c in f_obj.bound_box]
+        local_xs = [(M_inv @ c).x for c in f_corners]
+        f_x_min, f_x_max = min(local_xs), max(local_xs)
+        # Cache obstacles per host wall (interior walls T-junctioning with it)
+        if host.Name not in obstacles_by_host:
+            obstacles_by_host[host.Name] = _obstacles_on_wall_local_x(
+                host_obj, clearance=0.0,
+            )
+        for o_min, o_max in obstacles_by_host[host.Name]:
+            ovl = min(f_x_max, o_max) - max(f_x_min, o_min)
+            if ovl > tolerance:
+                ifc_class = f.is_a().replace("Ifc", "")
+                issues.append(
+                    f"{ifc_class} '{f.Name}' on '{host.Name}' crosses an "
+                    f"interior partition (partition meets host at local "
+                    f"x=[{o_min:.3f}, {o_max:.3f}]; opening spans "
+                    f"x=[{f_x_min:.3f}, {f_x_max:.3f}], overlap "
+                    f"{ovl*1000:.0f}mm)"
+                )
+                details.append({
+                    "type": "filling_crosses_interior_wall",
+                    "filling": f.Name, "host": host.Name,
+                    "overlap_mm": round(ovl * 1000, 1),
+                    "filling_local_x": (round(f_x_min, 3), round(f_x_max, 3)),
+                    "partition_local_x": (round(o_min, 3), round(o_max, 3)),
+                })
+
+    # --- 3 + 4. Stair vs slab void checks ---
+    slabs_info = []
+    for s in ifc.by_type("IfcSlab"):
+        obj = tool.Ifc.get_object(s)
+        bbox = _world_xy_bbox(obj)
+        if bbox is None:
+            continue
+        slabs_info.append({"entity": s, "obj": obj, "bbox": bbox})
+
+    for stair in ifc.by_type("IfcStair"):
+        s_obj = tool.Ifc.get_object(stair)
+        if s_obj is None or not s_obj.data or not s_obj.data.vertices:
+            continue
+        deps = bpy.context.evaluated_depsgraph_get()
+        me = s_obj.evaluated_get(deps).to_mesh()
+        s_verts = [s_obj.matrix_world @ v.co for v in me.vertices]
+        s_obj.evaluated_get(deps).to_mesh_clear()
+        s_top_z = max(v.z for v in s_verts)
+        s_x_min = min(v.x for v in s_verts)
+        s_x_max = max(v.x for v in s_verts)
+        s_y_min = min(v.y for v in s_verts)
+        s_y_max = max(v.y for v in s_verts)
+
+        # Find the slab the stair penetrates (slab whose z range contains s_top_z)
+        upper_slab = None
+        for sl in slabs_info:
+            _, _, _, _, sz_min, sz_max = sl["bbox"]
+            if sz_min - tolerance <= s_top_z <= sz_max + tolerance:
+                # And the stair plan footprint overlaps the slab plan footprint
+                slx0, slx1, sly0, sly1, _, _ = sl["bbox"]
+                if (min(s_x_max, slx1) - max(s_x_min, slx0) > tolerance and
+                    min(s_y_max, sly1) - max(s_y_min, sly0) > tolerance):
+                    upper_slab = sl
+                    break
+        if upper_slab is None:
+            continue   # stair tops out in open air — no slab to void
+
+        slab_ent = upper_slab["entity"]
+        rels = slab_ent.HasOpenings or []
+        if not rels:
+            issues.append(
+                f"Stair '{stair.Name}' penetrates slab '{slab_ent.Name}' "
+                f"but slab has NO IfcOpeningElement — call "
+                f"add_stairwell_opening_for_stair()"
+            )
+            details.append({
+                "type": "stair_no_void",
+                "stair": stair.Name, "slab": slab_ent.Name,
+            })
+            continue
+
+        # Compute last tread back position in run direction (matching the
+        # logic in add_stairwell_opening_for_stair).
+        rot_z = s_obj.rotation_euler.z % (2 * math.pi)
+        quarter_idx = round(rot_z / (math.pi / 2)) % 4
+        top_surface = [v for v in s_verts if abs(v.z - s_top_z) < 0.01]
+        if not top_surface:
+            continue
+        if quarter_idx == 0:
+            last_back = max(v.x for v in top_surface);   axis_label = "+X"
+        elif quarter_idx == 1:
+            last_back = max(v.y for v in top_surface);   axis_label = "+Y"
+        elif quarter_idx == 2:
+            last_back = min(v.x for v in top_surface);   axis_label = "-X"
+        else:
+            last_back = min(v.y for v in top_surface);   axis_label = "-Y"
+
+        # Compare against each opening's footprint along the run direction.
+        for rel in rels:
+            opening = rel.RelatedOpeningElement
+            try:
+                origin = opening.ObjectPlacement.RelativePlacement.Location.Coordinates
+                solid = opening.Representation.Representations[0].Items[0]
+                xdim = float(solid.SweptArea.XDim)
+                ydim = float(solid.SweptArea.YDim)
+            except (AttributeError, IndexError):
+                continue
+            vx_min, vx_max = origin[0], origin[0] + xdim
+            vy_min, vy_max = origin[1], origin[1] + ydim
+            if axis_label == "+X":   void_exit_edge = vx_max
+            elif axis_label == "+Y": void_exit_edge = vy_max
+            elif axis_label == "-X": void_exit_edge = vx_min
+            else:                     void_exit_edge = vy_min
+            gap = void_exit_edge - last_back if axis_label in ("+X", "+Y") else last_back - void_exit_edge
+            if abs(gap) > void_alignment_tolerance:
+                direction = "overshoots past" if gap > 0 else "stops short of"
+                issues.append(
+                    f"Stair '{stair.Name}' void '{opening.Name}' "
+                    f"{direction} last-tread-back by {abs(gap)*1000:.0f}mm "
+                    f"in {axis_label} direction — re-cut with top_margin=0"
+                )
+                details.append({
+                    "type": "stair_void_misaligned",
+                    "stair": stair.Name, "opening": opening.Name,
+                    "run_axis": axis_label,
+                    "gap_mm": round(gap * 1000, 1),
+                })
+
+    return {"ok": not issues, "issues": issues, "details": details}
 
 
 # ---------------------------------------------------------------------------

@@ -141,7 +141,7 @@ on creation:
 | Largest extrusion depth (door panel) | `Panel` IfcSurfaceStyle |
 
 The styles `Frame`, `Glass`, `Panel` are created by
-[`bootstrap_project()`](../bonsai-project-setup/) and linked to Blender
+[`setup_project()`](../bonsai-project-setup/) and linked to Blender
 materials via `BIMStyleProperties.ifc_definition_id`.
 
 To re-style every opening in one call (e.g. after regenerating walls):

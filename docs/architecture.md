@@ -85,8 +85,8 @@ The module has ~3500 lines organised in functional groups:
 10. Doors (parametric + type duplication)
     duplicate_door_type(...)
     create_parametric_door_type(...)
-11. Bootstrap + audit
-    bootstrap_project(...)
+11. Project setup + audit
+    setup_project(...)
     add_wall_quantities(...)
     fill_opening_overall_attrs(...)
     audit_with_screenshots(...)
@@ -97,9 +97,9 @@ The module has ~3500 lines organised in functional groups:
 
 (See the module source for exact ordering and helper docstrings.)
 
-Higher-numbered groups depend on lower-numbered ones. The bootstrap is
-last because it composes most of the others into a one-shot project
-setup.
+Higher-numbered groups depend on lower-numbered ones. The project setup
+is last because it composes most of the others into a one-shot project
+initialisation.
 
 ## Convention reference
 
@@ -116,7 +116,7 @@ The skills share these conventions across all helpers:
 | Floor-to-floor height | n/a | 3.0 m |
 | Project grid | `Grid` | 5 × 5 m, 4 m extension |
 
-These come from `bootstrap_project(...)` defaults. Pass kwargs to
+These come from `setup_project(...)` defaults. Pass kwargs to
 override.
 
 ## What this skill does NOT cover
